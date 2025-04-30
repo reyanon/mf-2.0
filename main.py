@@ -40,7 +40,7 @@ from friend_requests import (
 )
 
 # Tokens
-API_TOKEN = "7948962366:AAEMJftcHZUl3WPn5-5w0GdotnVHdvVxXNo"
+API_TOKEN = "7916536914:AAHwtvO8hfGl2U4xcfM1fAjMLNypPFEW5JQ"
 
 # Admin user IDs
 ADMIN_USER_IDS = [7405203657, 7996471035, 8060390897]  # Replace with actual admin user IDs
