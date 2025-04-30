@@ -2,8 +2,46 @@ from aiogram import types
 import requests
 import json
 from db import get_current_account, get_user_filters, set_user_filters
-from common import get_filter_keyboard, get_gender_keyboard, get_age_keyboard, get_nationality_keyboard
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+def get_filter_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Gender", callback_data="filter_gender")],
+        [InlineKeyboardButton(text="Age", callback_data="filter_age")],
+        [InlineKeyboardButton(text="Nationality", callback_data="filter_nationality")],
+        [InlineKeyboardButton(text="Back", callback_data="back_to_menu")]
+    ])
+    return keyboard
+
+def get_gender_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="All Gender", callback_data="filter_gender_all")],
+        [InlineKeyboardButton(text="Male", callback_data="filter_gender_male")],
+        [InlineKeyboardButton(text="Female", callback_data="filter_gender_female")],
+        [InlineKeyboardButton(text="Back", callback_data="filter_back")]
+    ])
+    return keyboard
+
+def get_age_keyboard():
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=str(age), callback_data=f"filter_age_{age}") for age in range(18, 41)],
+        [InlineKeyboardButton(text="Back", callback_data="filter_back")]
+    ])
+    return keyboard
+
+def get_nationality_keyboard():
+    countries = [
+        ("RU", "🇷🇺"), ("UA", "🇺🇦"), ("BY", "🇧🇾"), ("IR", "🇮🇷"), ("PH", "🇵🇭"),
+        ("PK", "🇵🇰"), ("US", "🇺🇸"), ("IN", "🇮🇳"), ("DE", "🇩🇪"), ("FR", "🇫🇷"),
+        ("BR", "🇧🇷"), ("CN", "🇨🇳"), ("JP", "🇯🇵"), ("KR", "🇰🇷"), ("CA", "🇨🇦"),
+        ("AU", "🇦🇺"), ("IT", "🇮🇹"), ("ES", "🇪🇸"), ("ZA", "🇿🇦")
+    ]
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="All Countries", callback_data="filter_nationality_all")],
+        *[[InlineKeyboardButton(text=f"{flag} {country}", callback_data=f"filter_nationality_{country}")] for country, flag in countries],
+        [InlineKeyboardButton(text="Back", callback_data="filter_back")]
+    ])
+    return keyboard
 async def set_filter(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     token = get_current_account(user_id)
@@ -63,6 +101,14 @@ async def set_filter(callback_query: types.CallbackQuery):
         else:
             filter_data["filterNationalityCode"] = nationality
         message = f"Filter updated: Nationality set to {nationality}"
+
+    elif callback_query.data == "filter_back":
+        # Return to main filter menu
+        await callback_query.message.edit_text(
+            "Set your filter preferences:",
+            reply_markup=get_filter_keyboard()
+        )
+        return
 
     # Update user filters in storage
     set_user_filters(user_id, token, filter_data)
