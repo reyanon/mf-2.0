@@ -395,12 +395,6 @@ async def invoke_command(message: types.Message):
     else:
         await message.reply("All accounts are working.")
 
-@router.message(Command("aio"))
-async def aio_command(message: types.Message):
-    if not has_valid_access(message.chat.id):
-        await message.reply("You are not authorized to use this bot.")
-        return
-    await message.answer("Choose an action:", reply_markup=aio_markup)
 
 @router.message(Command("settings"))
 async def settings_command(message: types.Message):
