@@ -798,7 +798,7 @@ async def set_bot_commands():
     commands = [
         BotCommand(command="start", description="Start the bot"),
         BotCommand(command="lounge", description="Send message in the lounge"),
-        BotCommand(command="chatroom", description="Send a message in Chatroom"),
+        BotCommand(command="chatroom", description="Send message in Chatroom"),
         BotCommand(command="send_lounge_all", description="Send lounge message to ALL ID"),
         BotCommand(command="send_chat_all", description="Send chatroom message to ALL ID"),
         BotCommand(command="invoke", description="Verify and remove disabled accounts"),
