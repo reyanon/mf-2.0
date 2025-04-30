@@ -68,35 +68,17 @@ router = Router()
 dp = Dispatcher()
 
 
-# Inline keyboards with simplified organization
+# Inline keyboards
 start_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Send Request", callback_data="send_request_menu")],
-    [InlineKeyboardButton(text="Send Request All", callback_data="send_request_all_menu")],
-])
-
-# Send Request submenu
-send_request_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Start Request", callback_data="start")],
+    [InlineKeyboardButton(text="Start Requests", callback_data="start")],
     [InlineKeyboardButton(text="All Countries", callback_data="all_countries")],
-    [InlineKeyboardButton(text="Back", callback_data="back_to_menu")]
+    [InlineKeyboardButton(text="Send Request to All", callback_data="start_all")],  
+    [InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts")],
 ])
 
-# Send Request All submenu with confirmation
-send_request_all_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Confirm", callback_data="start_all")],
-    [InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")]
-])
-
-# Back button markup
 back_markup = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Back", callback_data="back_to_menu")]
 ])
-
-# Stop markup
-stop_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Stop", callback_data="stop")]
-])
-
 
 def is_admin(user_id):
     return user_id in ADMIN_USER_IDS
@@ -318,7 +300,6 @@ async def send_chat_all(message: types.Message):
     except Exception as e:
         await status.edit_text(f"❌ Error sending messages: {str(e)}")
         logging.error(f"Error in /send_chat_all command: {str(e)}")
-
 @router.message(Command("skip"))
 async def unsubscribe_all_command(message: types.Message):
     user_id = message.chat.id
@@ -333,7 +314,6 @@ async def unsubscribe_all_command(message: types.Message):
     status_message = await message.reply("Fetching chatrooms and unsubscribing...")
     await unsubscribe_everyone(token, status_message=status_message, bot=bot, chat_id=user_id)
     await status_message.edit_text("Unsubscribed from all chatrooms.")
-
 @router.message(Command("filter"))
 async def filter_handler(message: types.Message):
     if not has_valid_access(message.chat.id):
@@ -391,41 +371,6 @@ async def aio_command(message: types.Message):
         await message.reply("You are not authorized to use this bot.")
         return
     await message.answer("Choose an action:", reply_markup=aio_markup)
-
-@router.message(Command("settings"))
-async def settings_command(message: types.Message):
-    user_id = message.chat.id
-    if not has_valid_access(user_id):
-        await message.reply("You are not authorized to use this bot.")
-        return
-    
-    # Initialize state if not exists
-    if user_id not in user_states:
-        user_states[user_id] = {}
-    
-    # Show filter, spam filter, and manage accounts options
-    buttons = []
-    
-    # Filter button
-    buttons.append([InlineKeyboardButton(text="Filter Preferences", callback_data="filter_menu")])
-    
-    # Spam filter toggle
-    spam_on = get_spam_filter(user_id)
-    buttons.append([
-        InlineKeyboardButton(
-            text=f"Spam Filter: {'ON ✅' if spam_on else 'OFF ❌'}",
-            callback_data="toggle_spam_filter"
-        )
-    ])
-    
-    # Manage accounts button
-    buttons.append([InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts")])
-    
-    # Back button
-    buttons.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
-    
-    settings_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.reply("Settings menu:", reply_markup=settings_markup)
 
 ## Comands for db connection
 
@@ -557,7 +502,6 @@ async def handle_new_token(message: types.Message):
     else:
         await message.reply("Message text is empty. Please provide a valid token.")
 ##############################################
-
 @router.callback_query()
 async def callback_handler(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
@@ -569,27 +513,10 @@ async def callback_handler(callback_query: CallbackQuery):
         return
 
     # Initialize the state for the user, or use a default empty dictionary
-    if user_id not in user_states:
-        user_states[user_id] = {}
-    state = user_states[user_id]
+    state = user_states.get(user_id, {})
 
-    # Main menu options
-    if data == "send_request_menu":
-        await callback_query.message.edit_text(
-            "Send Request options:",
-            reply_markup=send_request_markup
-        )
-        return
-    
-    elif data == "send_request_all_menu":
-        await callback_query.message.edit_text(
-            "Are you sure you want to send request to all active accounts?",
-            reply_markup=send_request_all_markup
-        )
-        return
-
-    # Manage Accounts Menu - Updated with active status toggle and delete confirmation
-    elif data == "manage_accounts":
+    # Manage Accounts Menu - Updated with active status toggle
+    if data == "manage_accounts":
         tokens = get_tokens(user_id)
         current_token = get_current_account(user_id)
 
@@ -618,39 +545,28 @@ async def callback_handler(callback_query: CallbackQuery):
                 ),
                 InlineKeyboardButton(
                     text="Delete",
-                    callback_data=f"confirm_delete_{i}"
+                    callback_data=f"delete_account_{i}"
                 )
             ])
 
+        # Spam Filter toggle
+        spam_on = get_spam_filter(user_id)
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"Spam Filter: {'ON ✅' if spam_on else 'OFF ❌'}",
+                callback_data="toggle_spam_filter"
+            )
+        ])
+
         # Back button
         buttons.append([
-            InlineKeyboardButton(text="Back", callback_data="settings_menu")
+            InlineKeyboardButton(text="Back", callback_data="back_to_menu")
         ])
 
         await callback_query.message.edit_text(
             "Manage your accounts:\n(Active accounts are available for multi-token functions)",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
         )
-        return
-    
-    # Confirmation for account deletion
-    elif data.startswith("confirm_delete_"):
-        idx = int(data.split("_")[-1])
-        tokens = get_tokens(user_id)
-        if 0 <= idx < len(tokens):
-            account_name = tokens[idx]["name"]
-            buttons = [
-                [
-                    InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{idx}"),
-                    InlineKeyboardButton(text="Cancel", callback_data="manage_accounts")
-                ]
-            ]
-            await callback_query.message.edit_text(
-                f"Are you sure you want to delete account '{account_name}'?",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
-            )
-        else:
-            await callback_query.answer("Invalid account selected.")
         return
         
     # Add new handler for toggling token status
@@ -662,9 +578,11 @@ async def callback_handler(callback_query: CallbackQuery):
             toggle_token_status(user_id, token)
             await callback_query.answer(f"Status toggled for {tokens[idx]['name']}")
             
-            # Return to manage accounts menu
-            await callback_query.data = "manage_accounts"
-            await callback_handler(callback_query)
+            # Update the manage accounts menu
+            await callback_query.message.edit_text(
+                "Account status updated",
+                reply_markup=back_markup
+            )
         else:
             await callback_query.answer("Invalid account selected.")
         return
@@ -678,13 +596,36 @@ async def callback_handler(callback_query: CallbackQuery):
             f"Spam Filter {'Enabled ✅' if new_state else 'Disabled ❌'}"
         )
 
-        # Return to settings menu with updated state
+        # Rebuild the Manage Accounts menu with updated state:
+        tokens = get_tokens(user_id)
+        current_token = get_current_account(user_id)
+
+        buttons = []
+        for i, tok in enumerate(tokens):
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{tok['name']} {'(Current)' if tok['token']==current_token else ''}",
+                    callback_data=f"set_account_{i}"
+                ),
+                InlineKeyboardButton(
+                    text="Delete",
+                    callback_data=f"delete_account_{i}"
+                )
+            ])
+
+        # Updated spam button
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"Spam Filter: {'ON ✅' if new_state else 'OFF ❌'}",
+                callback_data="toggle_spam_filter"
+            )
+        ])
+        buttons.append([InlineKeyboardButton(text="Back", callback_data="back_to_menu")])
+
         await callback_query.message.edit_text(
-            "Spam filter updated. Returning to settings menu..."
+            "Manage your accounts:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
         )
-        # Simulate clicking on settings menu to refresh
-        message = callback_query.message
-        await settings_command(message)
         return
 
     # Set active account
@@ -693,7 +634,7 @@ async def callback_handler(callback_query: CallbackQuery):
         tokens = get_tokens(user_id)
         if 0 <= idx < len(tokens):
             set_current_account(user_id, tokens[idx]["token"])
-            await callback_query.message.edit_text("Account set as active. You can now start requests.", reply_markup=back_markup)
+            await callback_query.message.edit_text("Account set as active. You can now start requests.")
         else:
             await callback_query.answer("Invalid account selected.")
         return
@@ -711,13 +652,7 @@ async def callback_handler(callback_query: CallbackQuery):
 
     # Back to main menu
     elif data == "back_to_menu":
-        await callback_query.message.edit_text("Welcome! Choose an option below:", reply_markup=start_markup)
-        return
-        
-    elif data == "settings_menu":
-        # Return to settings menu
-        message = callback_query.message
-        await settings_command(message)
+        await callback_query.message.edit_text("Welcome! Use the buttons below to navigate.", reply_markup=start_markup)
         return
 
     # Start request
@@ -743,7 +678,7 @@ async def callback_handler(callback_query: CallbackQuery):
                 await callback_query.message.edit_text("Failed to start requests. Please try again later.", reply_markup=start_markup)
                 state["running"] = False
 
-    # Start all requests (after confirmation)
+    # Start all requests
     elif data == "start_all":
         if state.get("running", False):
             await callback_query.answer("Another request is already running!")
@@ -815,16 +750,13 @@ async def callback_handler(callback_query: CallbackQuery):
                 await callback_query.message.edit_text("Failed to start All Countries feature.", reply_markup=start_markup)
                 state["running"] = False
 
+    elif data == "back_to_menu":
+        await callback_query.message.edit_text("Welcome! Use the buttons below to navigate.", reply_markup=start_markup)
+
     elif data.startswith("filter_"):
         await set_filter(callback_query)
 
-    elif data == "filter_menu":
-        await show_filter_menu(callback_query)
 
-async def show_filter_menu(callback_query):
-    # Implementation for filter menu display
-    # This would show the filter options and preferences
-    await filter_command(callback_query.message)
 
 async def set_bot_commands():
     commands = [
@@ -832,11 +764,13 @@ async def set_bot_commands():
         BotCommand(command="lounge", description="Send message in the lounge"),
         BotCommand(command="chatroom", description="Send a message in Chatroom"),
         BotCommand(command="send_lounge_all", description="Send lounge message to ALL ID"),
-        BotCommand(command="send_chat_all", description="Send chatroom message to ALL ID"),
+        BotCommand(command="send_chat_all",   description="Send chatroom message to ALL ID"),
+        BotCommand(command="send_lounge_all", description="Send lounge message to ALL ID"),
+     #  BotCommand(command="aio", description="Show aio commands"),#
+        BotCommand(command="filter", description="Set filter preferences"),
         BotCommand(command="invoke", description="Verify and remove disabled accounts"),
-        BotCommand(command="settings", description="Access bot settings and account management"),
-       # BotCommand(command="skip", description="Skip everyone in the chatroom"),
-      #  BotCommand(command="password", description="Enter password for temporary access")
+        BotCommand(command="skip", description="Skip everyone in the chatroom"),
+        BotCommand(command="password", description="Enter password for temporary access")
     ]
     await bot.set_my_commands(commands)
 
