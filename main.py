@@ -769,8 +769,8 @@ async def set_bot_commands():
      #  BotCommand(command="aio", description="Show aio commands"),#
         BotCommand(command="filter", description="Set filter preferences"),
         BotCommand(command="invoke", description="Verify and remove disabled accounts"),
-        BotCommand(command="skip", description="Skip everyone in the chatroom"),
-        BotCommand(command="password", description="Enter password for temporary access")
+     #   BotCommand(command="skip", description="Skip everyone in the chatroom"),
+    #    BotCommand(command="password", description="Enter password for temporary access")
     ]
     await bot.set_my_commands(commands)
 
