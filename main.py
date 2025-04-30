@@ -15,7 +15,6 @@ from lounge import send_lounge
 from chatroom import send_message_to_everyone
 from unsubscribe import unsubscribe_everyone
 from filters import filter_command, set_filter
-from aio import aio_markup, aio_callback_handler, run_requests, aio_markup_processing, user_states
 from allcountry import run_all_countries
 from chatroom import send_message_to_everyone_all_tokens
 from lounge import send_lounge_all_tokens
