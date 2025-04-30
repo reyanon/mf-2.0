@@ -70,8 +70,8 @@ dp = Dispatcher()
 
 # Inline keyboards
 start_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Start Requests", callback_data="start")],
-    [InlineKeyboardButton(text="All Countries", callback_data="all_countries")],
+    [InlineKeyboardButton(text="Send Requests", callback_data="start")],
+    [InlineKeyboardButton(text="Send Request Gloal", callback_data="all_countries")],
     [InlineKeyboardButton(text="Send Request to All", callback_data="start_all")],  
     [InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts")],
 ])
