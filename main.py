@@ -1,3 +1,4 @@
+
 import asyncio
 import aiohttp
 import logging
@@ -14,7 +15,8 @@ from db import set_token, get_tokens, set_current_account, get_current_account, 
 from lounge import send_lounge
 from chatroom import send_message_to_everyone
 from unsubscribe import unsubscribe_everyone
-from filters import filter_command, set_filter
+from filters import filter_command, set_filter, get_filter_keyboard
+from aio import aio_markup, aio_callback_handler, run_requests, aio_markup_processing, user_states
 from allcountry import run_all_countries
 from chatroom import send_message_to_everyone_all_tokens
 from lounge import send_lounge_all_tokens
@@ -39,7 +41,7 @@ from friend_requests import (
 )
 
 # Tokens
-API_TOKEN = "7916536914:AAHwtvO8hfGl2U4xcfM1fAjMLNypPFEW5JQ"
+API_TOKEN = "7948962366:AAEMJftcHZUl3WPn5-5w0GdotnVHdvVxXNo"
 
 # Admin user IDs
 ADMIN_USER_IDS = [7405203657, 7996471035, 8060390897]  # Replace with actual admin user IDs
@@ -51,8 +53,6 @@ password_access = {}
 TEMP_PASSWORD = "11223344"  # Replace with your chosen password
 
 TARGET_CHANNEL_ID = -1002610862940  # Your target group's chat ID
-
-##################
 
 # Add these global variables
 CURRENT_CONNECTED_COLLECTION = {}  # Store current connected DB for each admin: {admin_id: db_name}
@@ -100,16 +100,6 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Stop", callback_data="stop")]
 ])
 
-# New Filter Menu
-filter_menu_markup = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text="Gender", callback_data="filter_gender"),
-        InlineKeyboardButton(text="Age", callback_data="filter_age"),
-        InlineKeyboardButton(text="Nationality", callback_data="filter_nationality")
-    ],
-    [InlineKeyboardButton(text="Back", callback_data="settings_menu")]
-])
-
 def is_admin(user_id):
     return user_id in ADMIN_USER_IDS
 
@@ -120,13 +110,33 @@ def has_valid_access(user_id):
         return True
     return False
 
-# Add this function to handle database connection management
 def get_db_for_admin(user_id):
     """Get the currently connected database for an admin or the default one"""
     if user_id in ADMIN_USER_IDS and user_id in CURRENT_CONNECTED_COLLECTION:
         db_name = CURRENT_CONNECTED_COLLECTION[user_id]
         return client[db_name]
     return db  # Return the default db
+
+def get_settings_menu(user_id):
+    """Generate the settings menu markup"""
+    if user_id not in user_states:
+        user_states[user_id] = {}
+    
+    spam_on = get_spam_filter(user_id)
+    buttons = [
+        [
+            InlineKeyboardButton(text="Filter", callback_data="show_filters"),
+            InlineKeyboardButton(
+                text=f"Spam Filter: {'ON ✅' if spam_on else 'OFF ❌'}",
+                callback_data="toggle_spam_filter"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts"),
+            InlineKeyboardButton(text="Back", callback_data="back_to_menu")
+        ]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 @router.message(Command("password"))
 async def password_command(message: types.Message):
@@ -158,6 +168,7 @@ async def start_command(message: types.Message):
 @router.message(Command("send_lounge_all"))
 async def send_lounge_all(message: types.Message):
     user_id = message.chat.id
+
     if not has_valid_access(user_id):
         return await message.reply("🚫 You are not authorized to use this bot.")
 
@@ -194,6 +205,7 @@ async def send_lounge_all(message: types.Message):
 @router.message(Command("lounge"))
 async def lounge_command(message: types.Message):
     user_id = message.chat.id
+
     if not has_valid_access(user_id):
         await message.reply("🚫 You are not authorized to use this bot.")
         return
@@ -232,7 +244,12 @@ async def lounge_command(message: types.Message):
 
 @router.message(Command("chatroom"))
 async def send_to_all_command(message: types.Message):
+    """
+    Command: /chatroom <message>
+    Sends message to all chatrooms for the current active token
+    """
     user_id = message.chat.id
+
     if not has_valid_access(user_id):
         await message.reply("🚫 You are not authorized to use this bot.")
         return
@@ -278,7 +295,12 @@ async def send_to_all_command(message: types.Message):
 
 @router.message(Command("send_chat_all"))
 async def send_chat_all(message: types.Message):
+    """
+    Command: /send_chat_all <message>
+    Sends message to all chatrooms for ALL active tokens
+    """
     user_id = message.chat.id
+
     if not has_valid_access(user_id):
         await message.reply("🚫 You are not authorized to use this bot.")
         return
@@ -389,34 +411,13 @@ async def settings_command(message: types.Message):
         await message.reply("You are not authorized to use this bot.")
         return
     
-    # Initialize state if not exists
-    if user_id not in user_states:
-        user_states[user_id] = {}
-    
-    # Show filter, spam filter, and manage accounts options
-    spam_on = get_spam_filter(user_id)
-    buttons = [
-        [
-            InlineKeyboardButton(text="Filters", callback_data="filter_menu"),
-            InlineKeyboardButton(
-                text=f"Spam Filter: {'ON ✅' if spam_on else 'OFF ❌'}",
-                callback_data="toggle_spam_filter"
-            )
-        ],
-        [
-            InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts"),
-            InlineKeyboardButton(text="Back", callback_data="back_to_menu")
-        ]
-    ]
-    
-    settings_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.reply("Settings menu:", reply_markup=settings_markup)
-
-## Commands for db connection
+    await message.reply("Settings menu:", reply_markup=get_settings_menu(user_id))
 
 @router.message(Command("db_connect"))
 async def db_connect_command(message: types.Message):
+    """Connect to a specific user's collection (Admin only)"""
     user_id = message.from_user.id
+    
     if user_id not in ADMIN_USER_IDS:
         return
     
@@ -434,13 +435,16 @@ async def db_connect_command(message: types.Message):
             return
             
         CURRENT_CONNECTED_COLLECTION[user_id] = collection_name
+        
         await message.reply(f"Connected to collection: `{collection_name}`")
     except ValueError:
         await message.reply("Invalid user ID. Please provide a numeric user ID.")
 
 @router.message(Command("db_disconnect"))
 async def db_disconnect_command(message: types.Message):
+    """Disconnect from custom collection and return to default (Admin only)"""
     user_id = message.from_user.id
+    
     if user_id not in ADMIN_USER_IDS:
         return
     
@@ -453,13 +457,14 @@ async def db_disconnect_command(message: types.Message):
 
 @router.message(Command("db_list"))
 async def db_list_command(message: types.Message):
+    """List all available user collections (Admin only)"""
     user_id = message.from_user.id
+    
     if user_id not in ADMIN_USER_IDS:
         return
     
     collection_names = db.list_collection_names()
     user_collections = [name for name in collection_names if name.startswith("user_")]
-    
     current_collection = CURRENT_CONNECTED_COLLECTION.get(user_id, f"user_{user_id}")
     response = "Available user collections:\n\n"
     
@@ -472,8 +477,6 @@ async def db_list_command(message: types.Message):
     
     response += f"\nCurrently connected to: `{current_collection}`"
     await message.reply(response)
-    
-###### End Commands
 
 @router.message()
 async def handle_new_token(message: types.Message):
@@ -534,23 +537,6 @@ async def callback_handler(callback_query: CallbackQuery):
         user_states[user_id] = {}
     state = user_states[user_id]
 
-    # Filter menu
-    if data == "filter_menu":
-        await callback_query.message.edit_text(
-            "Set your filter preferences:",
-            reply_markup=filter_menu_markup
-        )
-        return
-
-    # Handle filter-related callbacks
-    if data in ["filter_gender", "filter_age", "filter_nationality"] or \
-       data.startswith("filter_gender_") or \
-       data.startswith("filter_age_") or \
-       data.startswith("filter_nationality_"):
-        await set_filter(callback_query)
-        return
-
-    # Main menu options
     if data == "send_request_menu":
         await callback_query.message.edit_text(
             "Send Request options:",
@@ -565,7 +551,19 @@ async def callback_handler(callback_query: CallbackQuery):
         )
         return
 
-    # Manage Accounts Menu
+    elif data == "show_filters":
+        await callback_query.message.edit_text(
+            "Set your filter preferences:",
+            reply_markup=get_filter_keyboard()
+        )
+        return
+
+    elif data in ["filter_gender", "filter_age", "filter_nationality", "filter_back"] or \
+         data.startswith("filter_gender_") or data.startswith("filter_age_") or \
+         data.startswith("filter_nationality_"):
+        await set_filter(callback_query)
+        return
+
     elif data == "manage_accounts":
         tokens = get_tokens(user_id)
         current_token = get_current_account(user_id)
@@ -608,7 +606,6 @@ async def callback_handler(callback_query: CallbackQuery):
         )
         return
     
-    # Confirmation for account deletion
     elif data.startswith("confirm_delete_"):
         idx = int(data.split("_")[-1])
         tokens = get_tokens(user_id)
@@ -616,7 +613,7 @@ async def callback_handler(callback_query: CallbackQuery):
             account_name = tokens[idx]["name"]
             buttons = [
                 [
-                    InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{idx}"),
+                    InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{i}"),
                     InlineKeyboardButton(text="Cancel", callback_data="manage_accounts")
                 ]
             ]
@@ -628,7 +625,6 @@ async def callback_handler(callback_query: CallbackQuery):
             await callback_query.answer("Invalid account selected.")
         return
         
-    # Toggle token status
     elif data.startswith("toggle_status_"):
         idx = int(data.split("_")[-1])
         tokens = get_tokens(user_id)
@@ -636,15 +632,37 @@ async def callback_handler(callback_query: CallbackQuery):
             token = tokens[idx]["token"]
             toggle_token_status(user_id, token)
             await callback_query.answer(f"Status toggled for {tokens[idx]['name']}")
+            
+            tokens = get_tokens(user_id)
+            current_token = get_current_account(user_id)
+            buttons = []
+            for i, tok in enumerate(tokens):
+                is_active = tok.get("active", True)
+                status_emoji = "✅ Active" if is_active else "❌ Inactive"
+                is_current = tok['token'] == current_token
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=f"{tok['name']} {'(Current)' if is_current else ''}",
+                        callback_data=f"set_account_{i}"
+                    ),
+                    InlineKeyboardButton(
+                        text=status_emoji,
+                        callback_data=f"toggle_status_{i}"
+                    ),
+                    InlineKeyboardButton(
+                        text="Delete",
+                        callback_data=f"confirm_delete_{i}"
+                    )
+                ])
+            buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
             await callback_query.message.edit_text(
                 "Manage your accounts:\n(Active accounts are available for multi-token functions)",
-                reply_markup=callback_query.message.reply_markup
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
         else:
             await callback_query.answer("Invalid account selected.")
         return
 
-    # Toggle spam filter
     elif data == "toggle_spam_filter":
         new_state = not get_spam_filter(user_id)
         set_spam_filter(user_id, new_state)
@@ -652,13 +670,11 @@ async def callback_handler(callback_query: CallbackQuery):
             f"Spam Filter {'Enabled ✅' if new_state else 'Disabled ❌'}"
         )
         await callback_query.message.edit_text(
-            "Spam filter updated. Returning to settings menu..."
+            "Spam filter updated. Returning to settings menu...",
+            reply_markup=get_settings_menu(user_id)
         )
-        message = callback_query.message
-        await settings_command(message)
         return
 
-    # Set active account
     elif data.startswith("set_account_"):
         idx = int(data.split("_")[-1])
         tokens = get_tokens(user_id)
@@ -669,7 +685,6 @@ async def callback_handler(callback_query: CallbackQuery):
             await callback_query.answer("Invalid account selected.")
         return
 
-    # Delete account
     elif data.startswith("delete_account_"):
         idx = int(data.split("_")[-1])
         tokens = get_tokens(user_id)
@@ -680,17 +695,17 @@ async def callback_handler(callback_query: CallbackQuery):
             await callback_query.answer("Invalid account selected.")
         return
 
-    # Back to main menu
     elif data == "back_to_menu":
         await callback_query.message.edit_text("Welcome! Choose an option below:", reply_markup=start_markup)
         return
         
     elif data == "settings_menu":
-        message = callback_query.message
-        await settings_command(message)
+        await callback_query.message.edit_text(
+            "Settings menu:",
+            reply_markup=get_settings_menu(user_id)
+        )
         return
 
-    # Start request
     elif data == "start":
         if state.get("running", False):
             await callback_query.answer("Requests are already running!")
@@ -711,40 +726,38 @@ async def callback_handler(callback_query: CallbackQuery):
                 await callback_query.message.edit_text("Failed to start requests. Please try again later.", reply_markup=start_markup)
                 state["running"] = False
 
-    # Start all requests
     elif data == "start_all":
         if state.get("running", False):
             await callback_query.answer("Another request is already running!")
-            return
-
-        tokens = get_active_tokens(user_id)
-        if not tokens:
-            await callback_query.answer("No active tokens found.")
-            return
+        else:
+            tokens = get_active_tokens(user_id)
+            if not tokens:
+                await callback_query.answer("No active tokens found.")
+                return
         
-        state["running"] = True
-        state["total_added_friends"] = 0
+            state["running"] = True
+            state["total_added_friends"] = 0
         
-        try:
-            msg = await callback_query.message.edit_text(
-                "🔄 Starting requests for all active tokens...", 
-                reply_markup=stop_markup
-            )
-            state["status_message_id"] = msg.message_id
-            state["pinned_message_id"] = msg.message_id
-            
-            await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
-            
-            asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID))
-            await callback_query.answer("Processing all tokens started!")
-        except Exception as e:
-            logging.error(f"Error starting all tokens: {e}")
-            await callback_query.message.edit_text(
-                "Failed to start processing all tokens. Please try again later.", 
-                reply_markup=start_markup
-            )
+            try:
+                msg = await callback_query.message.edit_text(
+                    "🔄 Starting requests for all active tokens...", 
+                    reply_markup=stop_markup
+                )
+                state["status_message_id"] = msg.message_id
+                state["pinned_message_id"] = msg.message_id
+                
+                await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
+                
+                asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID))
+                await callback_query.answer("Processing all tokens started!")
+            except Exception as e:
+                logging.error(f"Error starting all tokens: {e}")
+                await callback_query.message.edit_text(
+                    "Failed to start processing all tokens. Please try again later.", 
+                    reply_markup=start_markup
+                )
+                state["running"] = False
 
-    # Stop requests
     elif data == "stop":
         if not state.get("running", False):
             await callback_query.answer("Requests are not running!")
@@ -790,8 +803,8 @@ async def set_bot_commands():
         BotCommand(command="send_chat_all", description="Send chatroom message to ALL ID"),
         BotCommand(command="invoke", description="Verify and remove disabled accounts"),
         BotCommand(command="settings", description="Access bot settings and account management"),
-     #   BotCommand(command="skip", description="Skip everyone in the chatroom"),
-    #    BotCommand(command="password", description="Enter password for temporary access")
+     #  BotCommand(command="skip", description="Skip everyone in the chatroom"),
+     #   BotCommand(command="password", description="Enter password for temporary access")
     ]
     await bot.set_my_commands(commands)
 
