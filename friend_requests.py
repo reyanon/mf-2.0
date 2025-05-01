@@ -348,7 +348,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     async def _refresh_ui():
         last_message = ""
         update_count = 0
-        update_interval = 0.5  # Update every 0.5 seconds
+        update_interval = 1  # Update every seconds
         force_update_interval = 5  # Force update every 5 iterations
 
         while state["running"]:
