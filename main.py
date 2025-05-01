@@ -399,11 +399,20 @@ async def invoke_command(message: types.Message):
 @router.message(Command("settings"))
 async def settings_command(message: types.Message):
     user_id = message.chat.id
+    effective_user_id = get_effective_user_id(user_id)  # Get effective user ID
+    
     if not has_valid_access(user_id):
         await message.reply("You are not authorized to use this bot.")
         return
     
-    await message.reply("Settings menu:", reply_markup=get_settings_menu(user_id))
+    # Add information about which user's settings are being shown
+    if user_id in CONNECTED_USER_ID:
+        await message.reply(f"Settings menu for user {CONNECTED_USER_ID[user_id]}:", 
+                           reply_markup=get_settings_menu(effective_user_id))
+    else:
+        await message.reply("Settings menu:", 
+                           reply_markup=get_settings_menu(effective_user_id))
+
 
 @router.message(Command("db_connect"))
 async def db_connect_command(message: types.Message):
@@ -475,6 +484,7 @@ async def handle_new_token(message: types.Message):
     if message.text and message.text.startswith("/"):
         return
     user_id = message.from_user.id
+    effective_user_id = get_effective_user_id(user_id)  # Get effective user ID
 
     if message.from_user.is_bot:
         return
@@ -509,12 +519,20 @@ async def handle_new_token(message: types.Message):
                 await message.reply("Error verifying the token. Please try again.")
                 return
 
-        tokens = get_tokens(user_id)
+        tokens = get_tokens(effective_user_id)  # Use effective_user_id
         account_name = " ".join(token_data[1:]) if len(token_data) > 1 else f"Account {len(tokens) + 1}"
-        set_token(user_id, token, account_name)
-        await message.reply(f"Your access token has been verified and saved as {account_name}. Use the menu to manage accounts.")
+        
+        # When saving the token, use effective_user_id
+        set_token(effective_user_id, token, account_name)
+        
+        # Add information about which user's collection is being modified
+        if user_id in CONNECTED_USER_ID:
+            await message.reply(f"Token saved for user {CONNECTED_USER_ID[user_id]} as {account_name}. Use the menu to manage accounts.")
+        else:
+            await message.reply(f"Your access token has been verified and saved as {account_name}. Use the menu to manage accounts.")
     else:
         await message.reply("Message text is empty. Please provide a valid token.")
+
 
 @router.callback_query()
 async def callback_handler(callback_query: CallbackQuery):
