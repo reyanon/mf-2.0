@@ -548,6 +548,9 @@ async def callback_handler(callback_query: CallbackQuery):
         await callback_query.answer("You are not authorized to use this bot.")
         return
 
+    # Get the effective user ID (connected user or admin's own ID)
+    effective_user_id = get_effective_user_id(user_id)
+
     if user_id not in user_states:
         user_states[user_id] = {}
     state = user_states[user_id]
@@ -580,8 +583,8 @@ async def callback_handler(callback_query: CallbackQuery):
         return
 
     elif data == "manage_accounts":
-        tokens = get_tokens(user_id)
-        current_token = get_current_account(user_id)
+        tokens = get_tokens(effective_user_id)  # Use effective_user_id
+        current_token = get_current_account(effective_user_id)  # Use effective_user_id
 
         if not tokens:
             await callback_query.message.edit_text(
@@ -615,41 +618,37 @@ async def callback_handler(callback_query: CallbackQuery):
             InlineKeyboardButton(text="Back", callback_data="settings_menu")
         ])
 
+        # Add information about which user's accounts are being managed
+        header_text = "Manage your accounts:"
+        if user_id in CONNECTED_USER_ID:
+            header_text = f"Managing accounts for user {CONNECTED_USER_ID[user_id]}:"
+            
         await callback_query.message.edit_text(
-            "Manage your accounts:\n(Active accounts are available for multi-token functions)",
+            f"{header_text}\n(Active accounts are available for multi-token functions)",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
         )
         return
-    
-    elif data.startswith("confirm_delete_"):
+
+    elif data.startswith("confirm Vergleich":
         idx = int(data.split("_")[-1])
-        tokens = get_tokens(user_id)
+        tokens = get_tokens(effective_user_id)  # Use effective_user_id
         if 0 <= idx < len(tokens):
-            account_name = tokens[idx]["name"]
-            buttons = [
-                [
-                    InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{i}"),
-                    InlineKeyboardButton(text="Cancel", callback_data="manage_accounts")
-                ]
-            ]
-            await callback_query.message.edit_text(
-                f"Are you sure you want to delete account '{account_name}'?",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
-            )
+            set_current_account(effective_user_id, tokens[idx]["token"])  # Use effective_user_id
+            await callback_query.message.edit_text("Account set as active. You can now start requests.", reply_markup=back_markup)
         else:
             await callback_query.answer("Invalid account selected.")
         return
-        
+
     elif data.startswith("toggle_status_"):
         idx = int(data.split("_")[-1])
-        tokens = get_tokens(user_id)
+        tokens = get_tokens(effective_user_id)  # Use effective_user_id
         if 0 <= idx < len(tokens):
             token = tokens[idx]["token"]
-            toggle_token_status(user_id, token)
+            toggle_token_status(effective_user_id, token)  # Use effective_user_id
             await callback_query.answer(f"Status toggled for {tokens[idx]['name']}")
             
-            tokens = get_tokens(user_id)
-            current_token = get_current_account(user_id)
+            tokens = get_tokens(effective_user_id)  # Refresh tokens
+            current_token = get_current_account(effective_user_id)
             buttons = []
             for i, tok in enumerate(tokens):
                 is_active = tok.get("active", True)
@@ -670,8 +669,11 @@ async def callback_handler(callback_query: CallbackQuery):
                     )
                 ])
             buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
+            header_text = "Manage your accounts:"
+            if user_id in CONNECTED_USER_ID:
+                header_text = f"Managing accounts for user {CONNECTED_USER_ID[user_id]}:"
             await callback_query.message.edit_text(
-                "Manage your accounts:\n(Active accounts are available for multi-token functions)",
+                f"{header_text}\n(Active accounts are available for multi-token functions)",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
             )
         else:
@@ -679,32 +681,41 @@ async def callback_handler(callback_query: CallbackQuery):
         return
 
     elif data == "toggle_spam_filter":
-        new_state = not get_spam_filter(user_id)
-        set_spam_filter(user_id, new_state)
+        new_state = not get_spam_filter(effective_user_id)  # Use effective_user_id
+        set_spam_filter(effective_user_id, new_state)  # Use effective_user_id
         await callback_query.answer(
             f"Spam Filter {'Enabled ✅' if new_state else 'Disabled ❌'}"
         )
         await callback_query.message.edit_text(
             "Spam filter updated. Returning to settings menu...",
-            reply_markup=get_settings_menu(user_id)
+            reply_markup=get_settings_menu(effective_user_id)  # Use effective_user_id
         )
         return
 
-    elif data.startswith("set_account_"):
+    elif data.startswith("confirm_delete_"):
         idx = int(data.split("_")[-1])
-        tokens = get_tokens(user_id)
+        tokens = get_tokens(effective_user_id)  # Use effective_user_id
         if 0 <= idx < len(tokens):
-            set_current_account(user_id, tokens[idx]["token"])
-            await callback_query.message.edit_text("Account set as active. You can now start requests.", reply_markup=back_markup)
+            account_name = tokens[idx]["name"]
+            buttons = [
+                [
+                    InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{idx}"),
+                    InlineKeyboardButton(text="Cancel", callback_data="manage_accounts")
+                ]
+            ]
+            await callback_query.message.edit_text(
+                f"Are you sure you want to delete account '{account_name}'?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+            )
         else:
             await callback_query.answer("Invalid account selected.")
         return
 
     elif data.startswith("delete_account_"):
         idx = int(data.split("_")[-1])
-        tokens = get_tokens(user_id)
+        tokens = get_tokens(effective_user_id)  # Use effective_user_id
         if 0 <= idx < len(tokens):
-            delete_token(user_id, tokens[idx]["token"])
+            delete_token(effective_user_id, tokens[idx]["token"])  # Use effective_user_id
             await callback_query.message.edit_text("Account has been deleted.", reply_markup=back_markup)
         else:
             await callback_query.answer("Invalid account selected.")
@@ -715,9 +726,12 @@ async def callback_handler(callback_query: CallbackQuery):
         return
         
     elif data == "settings_menu":
+        header_text = "Settings menu:"
+        if user_id in CONNECTED_USER_ID:
+            header_text = f"Settings menu for user {CONNECTED_USER_ID[user_id]}:"
         await callback_query.message.edit_text(
-            "Settings menu:",
-            reply_markup=get_settings_menu(user_id)
+            header_text,
+            reply_markup=get_settings_menu(effective_user_id)  # Use effective_user_id
         )
         return
 
@@ -734,7 +748,7 @@ async def callback_handler(callback_query: CallbackQuery):
                 
                 await bot.pin_chat_message(chat_id=user_id, message_id=state["status_message_id"])
                 
-                asyncio.create_task(run_requests(user_id, bot, TARGET_CHANNEL_ID))
+                asyncio.create_task(run_requests(effective_user_id, bot, TARGET_CHANNEL_ID))  # Use effective_user_id
                 await callback_query.answer("Requests started!")
             except Exception as e:
                 logging.error(f"Error while starting requests: {e}")
@@ -745,7 +759,7 @@ async def callback_handler(callback_query: CallbackQuery):
         if state.get("running", False):
             await callback_query.answer("Another request is already running!")
         else:
-            tokens = get_active_tokens(user_id)
+            tokens = get_active_tokens(effective_user_id)  # Use effective_user_id
             if not tokens:
                 await callback_query.answer("No active tokens found.")
                 return
@@ -763,7 +777,7 @@ async def callback_handler(callback_query: CallbackQuery):
                 
                 await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
                 
-                asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID))
+                asyncio.create_task(process_all_tokens(effective_user_id, tokens, bot, TARGET_CHANNEL_ID))  # Use effective_user_id
                 await callback_query.answer("Processing all tokens started!")
             except Exception as e:
                 logging.error(f"Error starting all tokens: {e}")
@@ -802,7 +816,7 @@ async def callback_handler(callback_query: CallbackQuery):
                 state["pinned_message_id"] = status_message.message_id
                 state["stop_markup"] = stop_markup
                 await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id)
-                asyncio.create_task(run_all_countries(user_id, state, bot, get_current_account))
+                asyncio.create_task(run_all_countries(effective_user_id, state, bot, get_current_account))  # Use effective_user_id
                 await callback_query.answer("All Countries feature started!")
             except Exception as e:
                 logging.error(f"Error while starting All Countries feature: {e}")
