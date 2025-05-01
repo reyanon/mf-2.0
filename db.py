@@ -1,6 +1,5 @@
 from pymongo import MongoClient
 import datetime
-from main import CURRENT_CONNECTED_COLLECTION, ADMIN_USER_IDS
 
 # MongoDB connection
 client = MongoClient("mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB")
@@ -9,15 +8,21 @@ db = client.meeff_bot
 # Helper function to get a user's collection
 def _get_user_collection(user_id):
     """Get the collection for a specific user"""
-    print(f"User: {user_id}, CURRENT_CONNECTED_COLLECTION: {CURRENT_CONNECTED_COLLECTION}")  # Debug
-    if user_id in ADMIN_USER_IDS and user_id in CURRENT_CONNECTED_COLLECTION:
-        collection_name = CURRENT_CONNECTED_COLLECTION[user_id]
-        print(f"Returning collection: {collection_name}")  # Debug
-        return db[collection_name]
+    print(f"User: {user_id}")  # Debug
+    try:
+        from main import CURRENT_CONNECTED_COLLECTION, ADMIN_USER_IDS
+        print(f"CURRENT_CONNECTED_COLLECTION: {CURRENT_CONNECTED_COLLECTION}")  # Debug
+        if user_id in ADMIN_USER_IDS and user_id in CURRENT_CONNECTED_COLLECTION:
+            collection_name = CURRENT_CONNECTED_COLLECTION[user_id]
+            print(f"Returning collection: {collection_name}")  # Debug
+            return db[collection_name]
+    except ImportError as e:
+        print(f"Import error: {e}")  # Debug
     collection_name = f"user_{user_id}"
     print(f"Default collection: {collection_name}")  # Debug
     return db[collection_name]
 
+# ... rest of db.py remains unchanged ...
 
 # Helper function to ensure collection exists with basic structure
 def _ensure_user_collection_exists(user_id):
