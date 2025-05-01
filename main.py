@@ -115,6 +115,12 @@ def get_db_for_admin(user_id):
         return client[db_name]
     return db  # Return the default db
 
+def get_effective_user_id(admin_id):
+    """Get the effective user ID to use for operations (connected user ID or admin's own ID)"""
+    if admin_id in ADMIN_USER_IDS and admin_id in CONNECTED_USER_ID:
+        return CONNECTED_USER_ID[admin_id]
+    return admin_id
+
 def get_settings_menu(user_id):
     """Generate the settings menu markup"""
     if user_id not in user_states:
