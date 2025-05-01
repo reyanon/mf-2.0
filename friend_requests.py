@@ -99,7 +99,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id):
         details = format_user_details(user)
 
         await bot.send_message(chat_id=user_id, text=details, parse_mode="HTML")
-
+   #    await bot.send_message(chat_id="enter channel_id", text=details, parse_mode="HTML") # for current token logs
         batch_added_friends += 1
         state["total_added_friends"] += 1
 
@@ -310,7 +310,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                                 add_sent_id(user_id, "request", user["_id"])
 
                             details = format_user_details(user)
-                            await bot.send_message(chat_id=target_channel_id, text=details, parse_mode="HTML")
+                           # await bot.send_message(chat_id="enter channel_id", text=details, parse_mode="HTML") #For request all log
                             await bot.send_message(chat_id=user_id, text=details, parse_mode="HTML")
 
                             added_count += 1
