@@ -50,11 +50,10 @@ password_access = {}
 # Password for temporary access
 TEMP_PASSWORD = "11223344"  # Replace with your chosen password
 
-TARGET_CHANNEL_ID = -1002610862940  # Your target group's chat ID
 
 # Add these global variables
 CURRENT_CONNECTED_COLLECTION = {}  # Store current connected DB for each admin: {admin_id: db_name}
-
+CONNECTED_USER_ID = {}
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
