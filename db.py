@@ -1,5 +1,6 @@
 from pymongo import MongoClient
 import datetime
+from main import CURRENT_CONNECTED_COLLECTION, ADMIN_USER_IDS
 
 # MongoDB connection
 client = MongoClient("mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB")
@@ -8,18 +9,14 @@ db = client.meeff_bot
 # Helper function to get a user's collection
 def _get_user_collection(user_id):
     """Get the collection for a specific user"""
-    try:
-        from main import CURRENT_CONNECTED_COLLECTION, ADMIN_USER_IDS
-
-        # If admin user has specified a target collection, return that collection
-        if user_id in ADMIN_USER_IDS and user_id in CURRENT_CONNECTED_COLLECTION:
-            collection_name = CURRENT_CONNECTED_COLLECTION[user_id]
-            return db[collection_name]
-    except (ImportError, KeyError):
-        pass
-
-    # Default behavior - use the user's own collection
-    return db[f"user_{user_id}"]
+    print(f"User: {user_id}, CURRENT_CONNECTED_COLLECTION: {CURRENT_CONNECTED_COLLECTION}")  # Debug
+    if user_id in ADMIN_USER_IDS and user_id in CURRENT_CONNECTED_COLLECTION:
+        collection_name = CURRENT_CONNECTED_COLLECTION[user_id]
+        print(f"Returning collection: {collection_name}")  # Debug
+        return db[collection_name]
+    collection_name = f"user_{user_id}"
+    print(f"Default collection: {collection_name}")  # Debug
+    return db[collection_name]
 
 
 # Helper function to ensure collection exists with basic structure
