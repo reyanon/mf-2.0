@@ -283,14 +283,14 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                         users = await fetch_users(session, token)
                         logging.info(f"Fetched {len(users) if users else 'None'} users for {name}, empty_batches={empty_batches}")
                         if users is None:
-                            token_status[name] = (added_count, filtered_count, "Rate Limit Exceeded")
+                            token_status[name] = (added_count, filtered_count, "No more users")
                             return added_count
                         if not users or len(users) < 5:
                             empty_batches += 1
-                            token_status[name] = (added_count, filtered_count, f"Waiting ({empty_batches}/10)")
+                            token_status[name] = (added_count, filtered_count, "Processing")
                             await asyncio.sleep(EMPTY_BATCH_DELAY * (2 ** empty_batches))  # Exponential backoff
                             if empty_batches >= 10:
-                                token_status[name] = (added_count, filtered_count, "Insufficient Users")
+                                token_status[name] = (added_count, filtered_count, "No more users")
                                 return added_count
                             continue
                         empty_batches = 0
@@ -305,7 +305,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
                     except Exception as e:
                         logging.error(f"Error processing {name}: {e}")
-                        token_status[name] = (added_count, filtered_count, "Retrying")
+                        token_status[name] = (added_count, filtered_count, "Retry")
                         await asyncio.sleep(PER_ERROR_DELAY)
 
                 token_status[name] = (added_count, filtered_count, "Stopped")
@@ -326,12 +326,12 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
             try:
                 lines = [
                     "🔄 <b>Friend Requests AIO Status</b>\n",
-                    "<pre>Account   │Added │Filter│Status</pre>"
+                    "<pre>Account   │Added │Filter│Status</pre>",
                 ]
 
                 any_processing = False
                 for name, (added, filtered, status) in token_status.items():
-                    if status == "Processing" or "Retry" in status or "Waiting" in status:
+                    if status == "Processing" or "Retry" in status:
                         any_processing = True
                     display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
                     lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
@@ -344,7 +344,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                 lines.append(f"<b>Elapsed:</b> {int(elapsed//60)}m {int(elapsed%60)}s")
 
                 if not any_processing and not state["running"]:
-                    lines.append(f"\n✅ <b>All workers completed!</b>")
+                    lines.append(f"\n✅ <b>Done!</b>")
                 else:
                     spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
                     spinner = spinners[update_count % len(spinners)]
@@ -352,7 +352,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
                 current_message = "\n".join(lines)
                 update_count += 1
-                force_update = (update_count % force_update_interval == 0)
+                force_update = update_count % force_update_interval == 0
 
                 if current_message != last_message or force_update:
                     try:
@@ -411,32 +411,6 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     # Final status
     total_added = sum(result for result in results if isinstance(result, int))
     total_filtered = sum(filtered for _, (added, filtered, _) in token_status.items())
-    successful_tokens = sum(1 for result in results if isinstance(result, int))
-    duration = time.time() - state.get("start_time", time.time())
-    speed_per_min = (total_added / duration) * 60 if duration > 0 else 0
-    success_rate = (successful_tokens / len(tokens)) * 100 if tokens else 0
-    emoji = "✅" if success_rate > 90 else "⚠️" if success_rate > 70 else "❌"
-
-    lines = [
-        f"{emoji} <b>Friend Requests AIO Completed</b> - {successful_tokens}/{len(tokens)} accounts",
-        f"⚡ <b>Speed:</b> {speed_per_min:.2f} users/min\n",
-        "<pre>Account   │Added │Filter│Status</pre>"
-    ]
-    for name, (added, filtered, status) in token_status.items():
-        display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-        lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
-
-    try:
-        await bot.edit_message_text(
-            chat_id=user_id,
-            message_id=state["status_message_id"],
-            text="\n".join(lines),
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logging.error(f"Final status update failed: {e}")
-
     await bot.send_message(
         user_id,
         f"{'⚠️ Process stopped' if state['stopped'] else '✅ Friend requests completed'}!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
