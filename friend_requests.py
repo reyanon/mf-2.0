@@ -306,7 +306,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     if not state.get("status_message_id"):
         status_message = await bot.send_message(
             chat_id=user_id,
-            text="🔄 <b>Friend Requests Starting</b>",
+            text="🔄 <b>Friend Requests AIO Starting</b>",
             parse_mode="HTML",
             reply_markup=stop_markup
         )
@@ -387,7 +387,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         while state["running"]:
             try:
                 # Simplified header format
-                header = f"🔄 <b>AIO Sending Requests.. </b> | {state['total_added_friends']}"
+                header = f"🔄 <b>AIO  Requests </b> | <b> Added:</b> {state['total_added_friends']}"
                 
                 lines = [
                     header,
@@ -397,7 +397,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
                 for name, (added, filtered, status) in token_status.items():
                     display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-                    lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
+                    lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status:>10}</pre>")
 
                 spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
                 spinner = spinners[update_count % len(spinners)]
@@ -443,7 +443,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     
     for name, (added, filtered, status) in token_status.items():
         display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-        initial_lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
+        initial_lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status:>10}</pre>")
     
     await bot.edit_message_text(
         chat_id=user_id,
@@ -518,8 +518,14 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         if "message is not modified" not in str(e):
             logging.error(f"Final status update failed: {e}")
 
-    # Send final message to user
-    await bot.send_message(
-        user_id,
-        f"{final_message}\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
-    )
+    # Send final message to user with explicit check of stopped state
+    if state.get("stopped", False):
+        await bot.send_message(
+            user_id,
+            f"⚠️ Process stopped!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
+        )
+    else:
+        await bot.send_message(
+            user_id,
+            f"✅ Friend requests completed!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
+        )
