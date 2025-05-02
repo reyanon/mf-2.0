@@ -306,7 +306,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     if not state.get("status_message_id"):
         status_message = await bot.send_message(
             chat_id=user_id,
-            text="🔄 <b>Starting AIO Friend Requests </b>",
+            text="🔄 <b>Friend Requests Status</b> | <b>Total Added:</b> 0",
             parse_mode="HTML",
             reply_markup=stop_markup
         )
@@ -387,7 +387,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         while state["running"]:
             try:
                 # Simplified header format
-                header = f"🔄 <b>Friend Requests Status</b> | <b>Total Added:</b> {state['total_added_friends']}"
+                header = f"🔄 <b>AIO Requests </b> | <b>Total Added:</b> {state['total_added_friends']}"
                 
                 lines = [
                     header,
@@ -433,7 +433,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
     # Show initial table before starting workers
     # Simplified initial header
-    initial_header = "🔄 <b>Friend Requests Status</b> | <b>Total Added:</b> 0"
+    initial_header = "🔄 <b>AIO Requests </b> | <b>Total Added:</b> 0"
     
     initial_lines = [
         initial_header,
@@ -479,8 +479,9 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     total_added = sum(result for result in results if isinstance(result, int))
     total_filtered = sum(filtered for _, (added, filtered, _) in token_status.items())
     
-    # Simplified final header
-    final_header = f"🔄 <b>Friend Requests Completed</b> | <b>Total Added:</b> {total_added}"
+    # Simplified final header with appropriate completion message
+    completion_status = "⚠️ Process Stopped" if state.get("stopped", False) else "✅ AIO Requests Completed"
+    final_header = f"🔄 <b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
     
     final_lines = [
         final_header,
@@ -503,7 +504,9 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         if "message is not modified" not in str(e):
             logging.error(f"Final status update failed: {e}")
 
+    # Final message with appropriate completion status
+    completion_message = "⚠️ Process stopped" if state.get("stopped", False) else "✅ Friend requests completed"
     await bot.send_message(
         user_id,
-        f"{'⚠️ Process stopped' if state.get('stopped', False) else '✅ Friend requests completed'}!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
+        f"{completion_message}!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
     )
