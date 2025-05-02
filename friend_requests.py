@@ -392,7 +392,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                 lines = [
                     header,
                     "",  # Empty line after header
-                    "<pre>Account   │Added │Filter│Status</pre>"
+                    "<pre>Account   │Added │Filter│Status     </pre>"
                 ]
 
                 for name, (added, filtered, status) in token_status.items():
@@ -491,8 +491,8 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         completion_status = "⚠️ Process Stopped"
         final_message = "⚠️ Process stopped!"
     else:
-        completion_status = "✅ Friend Requests Completed"
-        final_message = "✅ Friend requests completed!"
+        completion_status = "✅AIO Friend Requests Completed"
+        final_message = "✅ AIO Friend requests completed!"
     
     # Simplified final header
     final_header = f"🔄 <b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
@@ -500,7 +500,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     final_lines = [
         final_header,
         "",  # Empty line after header
-        "<pre>Account   │Added │Filter│Status</pre>"
+        "<pre>Account   │Added │Filter│Status      </pre>"
     ]
     
     for name, (added, filtered, status) in token_status.items():
@@ -527,5 +527,5 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     else:
         await bot.send_message(
             user_id,
-            f"✅ Friend requests completed!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
+            f"✅ AIO requests completed!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
         )
