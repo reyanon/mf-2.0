@@ -385,21 +385,20 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         force_update_interval = 3  # Force update every 3 iterations
 
         while state["running"]:
-            try:
-                lines = [
-                    "🔄 <b>Friend Requests Status</b>\n",
-                    "<pre>Account   │Added │Filter│Status</pre>"
-                ]
+    try:
+        total_added = state['total_added_friends']
+        lines = [
+            f"🔄 <b>Friend Requests Status</b> | <b>Total Added:</b> {total_added}\n",
+            "<pre>Account   │Added │Filter│Status</pre>"
+        ]
 
-                for name, (added, filtered, status) in token_status.items():
-                    display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-                    lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
+        for name, (added, filtered, status) in token_status.items():
+            display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
+            lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
 
-                lines.append(f"\n<b>Total Added:</b> {state['total_added_friends']}")
-
-                spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                spinner = spinners[update_count % len(spinners)]
-                lines.append(f"\n{spinner} <i>Processing...</i>")
+        spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        spinner = spinners[update_count % len(spinners)]
+        lines.append(f"\n{spinner} <i>Processing...</i>")
 
                 current_message = "\n".join(lines)
                 update_count += 1
