@@ -72,92 +72,119 @@ async def send_message(session, token, chatroom_id, message):
         logging.error(f"Error sending message to {chatroom_id}: {str(e)}")
         return None
 
-async def process_chatroom_batch(session, token, chatrooms, message, chat_id, spam_enabled):
-    """Process a batch of chatrooms concurrently"""
+async def process_chatroom_batch(session, token, chatrooms, message, chat_id, spam_enabled, sent_ids=None, sent_ids_lock=None):
+    """Process a batch of chatrooms concurrently, with optional in-memory deduplication."""
     sent_count = 0
+    filtered_count = 0
     filtered_rooms = []
-    
-    # First filter out already sent rooms if spam filter is enabled
+
+    # Filter out already sent rooms
     if spam_enabled:
         room_ids = [room.get('_id') for room in chatrooms]
-        existing_ids = await is_already_sent(chat_id, "chatroom", room_ids, bulk=True)
-        filtered_rooms = [room for room in chatrooms if room.get('_id') not in existing_ids]
+        # Check in-memory sent IDs first (if enabled)
+        if sent_ids is not None:
+            async with sent_ids_lock:
+                filtered_rooms = [room for room in chatrooms if room.get('_id') not in sent_ids]
+            filtered_count = len(chatrooms) - len(filtered_rooms)
+            logging.info(f"In-memory deduplication: Total={len(chatrooms)}, Filtered={filtered_count}")
+        else:
+            # Database check
+            existing_ids = await is_already_sent(chat_id, "chatroom", room_ids, bulk=True)
+            filtered_rooms = [room for room in chatrooms if room.get('_id') not in existing_ids]
+            filtered_count = len(chatrooms) - len(filtered_rooms)
+            logging.info(f"Database deduplication: Total={len(chatrooms)}, Filtered={filtered_count}")
     else:
         filtered_rooms = chatrooms
-    
+        logging.warning("Spam check disabled; duplicate messages may be sent")
+
     # Process all filtered rooms concurrently
-    tasks = []
-    for room in filtered_rooms:
-        room_id = room.get('_id')
-        tasks.append(send_message(session, token, room_id, message))
-    
+    tasks = [send_message(session, token, room.get('_id'), message) for room in filtered_rooms]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     sent_count = sum(1 for result in results if result is not None)
-    
-    # Bulk add sent IDs to database if spam filter is enabled
-    if spam_enabled and filtered_rooms:
-        sent_ids = [room.get('_id') for room in filtered_rooms]
-        await bulk_add_sent_ids(chat_id, "chatroom", sent_ids)
-    
-    return len(chatrooms), sent_count
 
-async def send_message_to_everyone(token, message, status_message=None, bot=None, chat_id=None, spam_enabled=False):
+    # Update sent IDs (database and in-memory)
+    if spam_enabled and filtered_rooms:
+        sent_ids_batch = [room.get('_id') for room in filtered_rooms]
+        # Update database
+        await bulk_add_sent_ids(chat_id, "chatroom", sent_ids_batch)
+        # Update in-memory set (if enabled)
+        if sent_ids is not None:
+            async with sent_ids_lock:
+                sent_ids.update(sent_ids_batch)
+            logging.info(f"Updated in-memory sent IDs: {len(sent_ids_batch)} added")
+
+    logging.info(f"Batch processed: Total={len(chatrooms)}, Sent={sent_count}, Filtered={filtered_count}")
+    return len(chatrooms), sent_count, filtered_count
+
+async def send_message_to_everyone(
+    token,
+    message,
+    status_message=None,
+    bot=None,
+    chat_id=None,
+    spam_enabled=True,  # Default to True to avoid duplicates
+    sent_ids=None,  # Optional in-memory sent IDs
+    sent_ids_lock=None  # Lock for thread-safe in-memory updates
+):
     """
-    Optimized version that processes chatrooms in batches concurrently.
-    Returns a tuple: (total_chatrooms, messages_sent).
+    Send messages to all chatrooms for a single token, with proper filtered count.
+    Returns a tuple: (total_chatrooms, messages_sent, filtered_count).
     """
     sent_count = 0
     total_chatrooms = 0
+    filtered_count = 0
     from_date = None
+
+    if not spam_enabled:
+        logging.warning("Spam check disabled for token; may send duplicate messages")
 
     async with aiohttp.ClientSession() as session:
         while True:
-            # fetch next page of chatrooms
+            # Fetch next page of chatrooms
             rooms, next_from = await (fetch_chatrooms(session, token, from_date)
                                     if from_date is None else
                                     fetch_more_chatrooms(session, token, from_date))
             if not rooms:
                 break
 
-            # process the batch of rooms
-            batch_total, batch_sent = await process_chatroom_batch(
-                session, token, rooms, message, chat_id, spam_enabled
+            # Process the batch of rooms
+            batch_total, batch_sent, batch_filtered = await process_chatroom_batch(
+                session, token, rooms, message, chat_id, spam_enabled, sent_ids, sent_ids_lock
             )
             total_chatrooms += batch_total
             sent_count += batch_sent
+            filtered_count += batch_filtered
 
-            # update status in Telegram
+            # Update status in Telegram
             if bot and chat_id and status_message:
                 try:
                     await bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=status_message.message_id,
-                        text=f"Chatrooms: {total_chatrooms} Messages sent: {sent_count}",
+                        text=f"Chatrooms: {total_chatrooms}, Sent: {sent_count}, Filtered: {filtered_count}",
                     )
                 except Exception as e:
                     logging.error(f"Error updating status message: {str(e)}")
 
-            logging.info(f"Sent messages to {sent_count}/{total_chatrooms} chatrooms.")
+            logging.info(f"Progress: Total={total_chatrooms}, Sent={sent_count}, Filtered={filtered_count}")
 
             if not next_from:
                 break
             from_date = next_from
 
-    # final update
+    # Final update
     if bot and chat_id and status_message:
         try:
             await bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=status_message.message_id,
-                text=f"Finished sending messages. Total Chatrooms: {total_chatrooms}, Messages sent: {sent_count}"
+                text=f"Finished. Total Chatrooms: {total_chatrooms}, Sent: {sent_count}, Filtered: {filtered_count}"
             )
         except Exception as e:
             logging.error(f"Error updating final status: {str(e)}")
 
-    logging.info(f"Finished sending messages. Total Chatrooms: {total_chatrooms}, Messages sent: {sent_count}")
-    return total_chatrooms, sent_count
-
-
+    logging.info(f"Finished token. Total={total_chatrooms}, Sent={sent_count}, Filtered={filtered_count}")
+    return total_chatrooms, sent_count, filtered_count
 
 async def send_message_to_everyone_all_tokens(
     tokens: List[str],
@@ -165,52 +192,36 @@ async def send_message_to_everyone_all_tokens(
     status_message: types.Message = None,
     bot=None,
     chat_id: int = None,
-    spam_enabled: bool = False,
-    token_names: Dict[str, str] = None  # Token -> account name mapping
+    spam_enabled: bool = True,  # Default to True
+    token_names: Dict[str, str] = None,  # Token -> account name mapping
+    use_in_memory_deduplication: bool = False  # Enable in-memory deduplication
 ) -> None:
     """
     Send messages to everyone for multiple tokens concurrently,
-    with improved UI updates and error handling.
+    with proper filtered count and optional in-memory deduplication.
     """
     token_status: Dict[str, Tuple[int, int, int, str]] = {}
+    sent_ids = set() if use_in_memory_deduplication else None
+    sent_ids_lock = asyncio.Lock() if use_in_memory_deduplication else None
 
     async def _worker(token: str, idx: int):
-        # Fix: Use the actual token name from the mapping if available
-        # Make sure we have a fallback if token not in mapping
-        display_name = None
-        if token_names and token in token_names:
-            display_name = token_names[token]
-        else:
-            display_name = token[:6]
-            
-        rooms = sent = filtered = 0
-        token_status[display_name] = (rooms, sent, filtered, "Processing")
+        display_name = token_names.get(token, token[:6]) if token_names else token[:6]
+        token_status[display_name] = (0, 0, 0, "Processing")
 
         try:
-            result = await send_message_to_everyone(
+            rooms, sent, filtered = await send_message_to_everyone(
                 token,
                 message,
                 status_message=None,
                 bot=None,
                 chat_id=chat_id,
-                spam_enabled=spam_enabled
+                spam_enabled=spam_enabled,
+                sent_ids=sent_ids,
+                sent_ids_lock=sent_ids_lock
             )
-
-            if isinstance(result, tuple):
-                if len(result) == 3:
-                    rooms, sent, filtered = result
-                elif len(result) == 2:
-                    rooms, sent = result
-                    filtered = 0
-            else:
-                rooms = result
-                sent = result
-                filtered = 0
-
             logging.info(f"[Token {idx}/{len(tokens)}] Rooms: {rooms}, Sent: {sent}, Filtered: {filtered}")
             token_status[display_name] = (rooms, sent, filtered, "Done")
             return True
-
         except Exception as e:
             logging.error(f"[Token {idx}/{len(tokens)}] failed: {str(e)}")
             token_status[display_name] = (0, 0, 0, f"Failed: {str(e)[:20]}...")
@@ -227,9 +238,7 @@ async def send_message_to_everyone_all_tokens(
                 lines.append(
                     f"<pre>{tid:<9}│{rooms:>5} │{sent:>4} │{filtered:>6} │{status}</pre>"
                 )
-
             current_message = "\n".join(lines)
-
             if current_message != last_message and bot and chat_id and status_message:
                 try:
                     await bot.edit_message_text(
@@ -242,20 +251,17 @@ async def send_message_to_everyone_all_tokens(
                 except Exception as e:
                     if "message is not modified" not in str(e):
                         logging.error(f"Error updating status: {e}")
+            await asyncio.sleep(0.5)
 
-            await asyncio.sleep(1)
-
-    # Initialize token status for all tokens
+    # Initialize token status
     for idx, token in enumerate(tokens, start=1):
-        # Fix: Use the actual token name from the mapping if available
-        # Make sure we have a fallback if token not in mapping
-        display_name = None
-        if token_names and token in token_names:
-            display_name = token_names[token]
-        else:
-            display_name = token[:6]
-            
+        display_name = token_names.get(token, token[:6]) if token_names else token[:6]
         token_status[display_name] = (0, 0, 0, "Queued")
+
+    if use_in_memory_deduplication:
+        logging.info("In-memory deduplication enabled")
+    if not spam_enabled:
+        logging.warning("Spam check disabled for all tokens; duplicates possible")
 
     ui_task = asyncio.create_task(_refresh_ui()) if bot and chat_id and status_message else None
     worker_tasks = [_worker(token, idx) for idx, token in enumerate(tokens, start=1)]
@@ -271,13 +277,12 @@ async def send_message_to_everyone_all_tokens(
 
     logging.info(
         f"[AllTokens] Finished: {successful_tokens}/{len(tokens)} tokens succeeded. "
-        f"Total Rooms={grand_rooms}, Total Messages={grand_sent}, Total Filtered={grand_filtered}"
+        f"Total Rooms={grand_rooms}, Total Sent={grand_sent}, Total Filtered={grand_filtered}"
     )
 
     if bot and chat_id and status_message:
         success_rate = (successful_tokens / len(tokens)) * 100 if len(tokens) > 0 else 0
         success_emoji = "✅" if success_rate > 90 else "⚠️" if success_rate > 70 else "❌"
-
         lines = [
             f"{success_emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} tokens ({success_rate:.1f}%)\n",
             "<pre>Account  │Rooms │Sent │Filter │Status</pre>"
@@ -286,7 +291,6 @@ async def send_message_to_everyone_all_tokens(
             lines.append(
                 f"<pre>{tid:<9}│{rooms:>5} │{sent:>4} │{filtered:>6} │{status}</pre>"
             )
-
         try:
             await bot.edit_message_text(
                 chat_id=chat_id,
