@@ -125,7 +125,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id, 
                     logging.info(f"Daily like limit reached for {token_name}.")
                     
                     if token_status and token_name in token_status:
-                        token_status[token_name] = (token_status[token_name][0], token_status[token_name][1], "Limit reached")
+                        token_status[token_name] = (token_status[token_name][0], token_status[token_name][1], "Limit Full")
                     else:
                         await bot.edit_message_text(
                             chat_id=user_id,
