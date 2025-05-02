@@ -219,71 +219,88 @@ async def send_lounge_all_tokens(
     spam_enabled: bool
 ) -> None:
     """
-    Process lounge messaging for all tokens concurrently,
-    each in its own ClientSession, with original <pre>-table UI.
+    Process lounge messaging for all tokens, fetching all batches of users.
+    Uses the same pagination logic as send_lounge.
     """
+    logger.info(f"Spam filter enabled: {spam_enabled}")
     token_status: Dict[str, Tuple[int, int, str]] = {}
+    sent_ids = await is_already_sent(chat_id, "lounge", None, bulk=True) if spam_enabled else set()
+    processing_ids = set()
+    lock = asyncio.Lock()
 
-    async def _worker(token: str, tid: str):
+    async def _worker(token: str, tid: str, sent_ids: set):
         sent = filtered = 0
+        successful_ids = []
         token_status[tid] = (sent, filtered, "Queued")
+        batch_count = 0
 
-        # independent session per token
         async with aiohttp.ClientSession(headers={**HEADERS, 'meeff-access-token': token}) as session:
-            # fetch once
-            try:
-                async with session.get(LOUNGE_URL, params={'locale': 'en'}, timeout=10) as resp:
-                    users = (await resp.json()).get("both", []) if resp.status == 200 else []
-            except Exception:
-                token_status[tid] = (0, 0, "Fetch error")
-                return
-
-            if not users:
-                token_status[tid] = (0, 0, "No users")
-                return
-
-            # spam filter
-            if not spam_enabled:
-                f = sum(u.get("user", {}).get("is_spam", False) for u in users)
-                filtered += f
-                users = [u for u in users if not u.get("user", {}).get("is_spam", False)]
-
-            # DB dedupe
-            ids = [u["user"]["_id"] for u in users if u["user"].get("_id")]
-            seen = await is_already_sent(chat_id, "lounge", ids, bulk=True)
-            users = [u for u in users if u["user"]["_id"] not in seen]
-
-            # send to each user
-            total = len(users)
-            for idx, u in enumerate(users, start=1):
-                uid = u["user"]["_id"]
-                # open chatroom
+            while True:
+                batch_count += 1
                 try:
-                    async with session.post(CHATROOM_URL, json={"waitingRoomId": uid, "locale":"en"}, timeout=10) as r:
-                        room = (await r.json()).get("chatRoom", {}).get("_id") if r.status == 200 else None
-                except Exception:
-                    room = None
+                    users = await fetch_lounge_users(token)
+                    if not users:
+                        if batch_count == 1:
+                            token_status[tid] = (sent, filtered, "No users")
+                        break
 
-                if room:
-                    try:
-                        async with session.post(
-                            SEND_MESSAGE_URL,
-                            json={"chatRoomId": room, "message": message, "locale":"en"},
-                            timeout=10
-                        ) as r2:
-                            if r2.status == 200:
-                                sent += 1
-                    except Exception:
-                        pass
+                    logger.info(f"Token {tid} fetched {len(users)} users in batch {batch_count}")
 
-                token_status[tid] = (sent, filtered, f"Sending {idx}/{total}")
+                    # Single-pass filtering for is_spam and deduplication
+                    filtered_users = []
+                    for u in users:
+                        uid = u["user"].get("_id")
+                        if not uid:
+                            continue
+                        if not spam_enabled and u.get("user", {}).get("is_spam", False):
+                            filtered += 1
+                            continue
+                        async with lock:
+                            if uid not in sent_ids and uid not in processing_ids:
+                                filtered_users.append(u)
+                                processing_ids.add(uid)
 
-            # record sent IDs
-            if spam_enabled and sent:
-                await bulk_add_sent_ids(
-                    chat_id, "lounge",
-                    [u["user"]["_id"] for u in users]
-                )
+                    total = len(filtered_users)
+                    for idx, u in enumerate(filtered_users, start=1):
+                        uid = u["user"]["_id"]
+                        try:
+                            async with session.post(
+                                CHATROOM_URL,
+                                json={"waitingRoomId": uid, "locale": "en"},
+                                timeout=10
+                            ) as r:
+                                room = (await r.json()).get("chatRoom", {}).get("_id") if r.status == 200 else None
+                        except Exception:
+                            room = None
+
+                        if room:
+                            try:
+                                async with session.post(
+                                    SEND_MESSAGE_URL,
+                                    json={"chatRoomId": room, "message": message, "locale": "en"},
+                                    timeout=10
+                                ) as r2:
+                                    if r2.status == 200:
+                                        sent += 1
+                                        successful_ids.append(uid)
+                                        logger.info(f"Token {tid} sent message to {uid}")
+                            except Exception:
+                                pass
+
+                        async with lock:
+                            processing_ids.discard(uid)
+                        token_status[tid] = (sent, filtered, f"Batch {batch_count}, {idx}/{total}")
+
+                    await asyncio.sleep(2)  # Match send_lounge delay
+
+                except Exception as e:
+                    logger.error(f"Token {tid} error in batch {batch_count}: {e}")
+                    break
+
+            # Save successful IDs
+            if spam_enabled and successful_ids:
+                await bulk_add_sent_ids(chat_id, "lounge", successful_ids)
+                logger.info(f"Token {tid} saved {len(successful_ids)} IDs to database")
 
             token_status[tid] = (sent, filtered, "Done")
 
@@ -298,8 +315,6 @@ async def send_lounge_all_tokens(
                 lines.append(f"<pre>{tid:<2} | {s:<4} | {f:<8} | {st}</pre>")
             
             current_message = "\n".join(lines)
-            
-            # Only update if content has changed
             if current_message != last_message:
                 try:
                     await bot.edit_message_text(
@@ -310,23 +325,21 @@ async def send_lounge_all_tokens(
                     )
                     last_message = current_message
                 except Exception as e:
-                    # Handle possible errors during message update
                     if "message is not modified" not in str(e):
                         logger.error(f"Error updating status: {e}")
-            
             await asyncio.sleep(1)
 
-    # spawn all workers
+    # Spawn workers
     tasks = []
     for idx, td in enumerate(tokens_data, start=1):
         tid = str(td.get("id", idx))
-        tasks.append(asyncio.create_task(_worker(td["token"], tid)))
+        tasks.append(asyncio.create_task(_worker(td["token"], tid, sent_ids)))
 
     ui_task = asyncio.create_task(_refresh())
     await asyncio.gather(*tasks)
     await ui_task
 
-    # final summary
+    # Final summary
     lines = [
         "✅ <b>AIO Lounge completed</b>\n",
         "<pre>ID | Sent | Filtered | State</pre>",
@@ -334,7 +347,6 @@ async def send_lounge_all_tokens(
     for tid, (s, f, _) in token_status.items():
         lines.append(f"<pre>{tid:<2} | {s:<4} | {f:<8} | Done</pre>")
 
-    # Final update - wrap in try/except to handle potential errors
     try:
         await bot.edit_message_text(
             chat_id=chat_id,
