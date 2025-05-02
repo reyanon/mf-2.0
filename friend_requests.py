@@ -306,7 +306,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     if not state.get("status_message_id"):
         status_message = await bot.send_message(
             chat_id=user_id,
-            text="🔄 <b>Friend Requests Status</b> | <b>Total Added:</b> 0",
+            text="🔄 <b>Starting AIO Friend Requests</b>",
             parse_mode="HTML",
             reply_markup=stop_markup
         )
