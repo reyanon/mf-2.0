@@ -495,7 +495,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         final_message = "✅ AIO Friend requests completed!"
     
     # Simplified final header
-    final_header = f"🔄 <b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
+    final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
     
     final_lines = [
         final_header,
