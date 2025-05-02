@@ -35,13 +35,20 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
 
 async def fetch_users(session, token):
     """Fetch users from the API for friend requests"""
-    url = "https://api.meeff.com/user/explore/v2/?lat=33.589510&lng=-117.860909"
+    url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
     headers = {"meeff-access-token": token, "Connection": "keep-alive"}
-    async with session.get(url, headers=headers) as response:
-        if response.status != 200:
-            logging.error(f"Failed to fetch users: {response.status}")
-            return []
-        return (await response.json()).get("users", [])
+    try:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 429:
+                logging.error("Request limit exceeded while fetching users.")
+                return None
+            if response.status != 200:
+                logging.error(f"Failed to fetch users: {response.status}")
+                return []
+            return (await response.json()).get("users", [])
+    except Exception as e:
+        logging.error(f"Fetch users failed: {e}")
+        return []
 
 def format_user_details(user):
     """Format user details for display"""
@@ -56,6 +63,7 @@ def format_user_details(user):
     )
 
 async def process_users(session, users, token, user_id, bot, target_channel_id):
+    """Process a batch of users and send friend requests"""
     state = user_states[user_id]
     batch_added_friends = 0
 
@@ -88,7 +96,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id):
                 await bot.edit_message_text(
                     chat_id=user_id,
                     message_id=state["status_message_id"],
-                    text=f"You've reached the daily limit. Total Added Friends: {state['total_added_friends']}. Try again tomorrow.",
+                    text=f"{token_name}: Daily limit reached. Total Added Friends: {state['total_added_friends']}. Try again tomorrow.",
                     reply_markup=None
                 )
                 return True
@@ -97,9 +105,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id):
             add_sent_id(user_id, "request", user["_id"])
 
         details = format_user_details(user)
-
         await bot.send_message(chat_id=user_id, text=details, parse_mode="HTML")
-   #    await bot.send_message(chat_id="enter channel_id", text=details, parse_mode="HTML") # for current token logs
         batch_added_friends += 1
         state["total_added_friends"] += 1
 
@@ -169,7 +175,7 @@ async def run_requests(user_id, bot, target_channel_id):
                         await asyncio.sleep(EMPTY_BATCH_DELAY)  # Wait a bit before trying again
                         
                         # After several attempts with no users, we might need to stop
-                        if state["batch_index"] > 3:  # Try up to 3 empty batches before giving up
+                        if state["batch_index"] > 10:  # Try up to 3 empty batches before giving up
                             try:
                                 await bot.edit_message_text(
                                     chat_id=user_id,
@@ -236,11 +242,13 @@ async def run_requests(user_id, bot, target_channel_id):
         )
 
 async def process_all_tokens(user_id, tokens, bot, target_channel_id):
+    """Process friend requests for all tokens concurrently"""
     state = user_states[user_id]
     state["total_added_friends"] = 0
     state["start_time"] = time.time()
-    state["running"] = True  # Ensure the state is properly initialized
-    
+    state["running"] = True
+    state["stopped"] = False
+
     # Initialize status message
     if not state.get("status_message_id"):
         status_message = await bot.send_message(
@@ -256,15 +264,13 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         except Exception as e:
             logging.error(f"Failed to pin message: {e}")
 
-    token_status = {}  # name -> (added, filtered, status)
+    token_status = {}
 
     async def _worker(token_obj, idx):
         name = token_obj.get("name", f"Account {idx}")
         token = token_obj["token"]
         added_count = 0
         filtered_count = 0
-        attempts = 0
-        max_attempts = 10
         empty_batches = 0
         status = "Processing"
 
@@ -272,71 +278,37 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
         try:
             async with aiohttp.ClientSession() as session:
-                while state["running"] and attempts < max_attempts and empty_batches < 3:
-                    attempts += 1
+                while state["running"]:
                     try:
                         users = await fetch_users(session, token)
-                        if not users:
+                        logging.info(f"Fetched {len(users) if users else 'None'} users for {name}, empty_batches={empty_batches}")
+                        if users is None:
+                            token_status[name] = (added_count, filtered_count, "Rate Limit Exceeded")
+                            return added_count
+                        if not users or len(users) < 5:
                             empty_batches += 1
-                            token_status[name] = (added_count, filtered_count, f"Waiting ({empty_batches}/3)")
-                            await asyncio.sleep(EMPTY_BATCH_DELAY)
+                            token_status[name] = (added_count, filtered_count, f"Waiting ({empty_batches}/10)")
+                            await asyncio.sleep(EMPTY_BATCH_DELAY * (2 ** empty_batches))  # Exponential backoff
+                            if empty_batches >= 10:
+                                token_status[name] = (added_count, filtered_count, "Insufficient Users")
+                                return added_count
                             continue
                         empty_batches = 0
 
-                        already_sent_ids = set()
-                        if get_spam_filter(user_id):
-                            already_sent_ids = get_already_sent_ids(user_id, "request")
+                        limit_reached = await process_users(session, users, token, user_id, bot, target_channel_id)
+                        if limit_reached:
+                            token_status[name] = (added_count, filtered_count, "Limit Exceeded")
+                            return added_count
 
-                        for user in users:
-                            if not state["running"]:
-                                token_status[name] = (added_count, filtered_count, "Stopped")
-                                return added_count
-
-                            if get_spam_filter(user_id) and user["_id"] in already_sent_ids:
-                                filtered_count += 1
-                                token_status[name] = (added_count, filtered_count, "Processing")
-                                continue
-
-                            url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={user['_id']}&isOkay=1"
-                            headers = {"meeff-access-token": token, "Connection": "keep-alive"}
-
-                            async with session.get(url, headers=headers) as response:
-                                data = await response.json()
-                                if data.get("errorCode") == "LikeExceeded":
-                                    token_status[name] = (added_count, filtered_count, "Limit Exceeded")
-                                    return added_count
-
-                            if get_spam_filter(user_id):
-                                add_sent_id(user_id, "request", user["_id"])
-
-                            details = format_user_details(user)
-                           # await bot.send_message(chat_id="enter channel_id", text=details, parse_mode="HTML") #For request all log
-                            await bot.send_message(chat_id=user_id, text=details, parse_mode="HTML")
-
-                            added_count += 1
-                            state["total_added_friends"] += 1
-                            token_status[name] = (added_count, filtered_count, "Processing")
-
-                            await asyncio.sleep(PER_USER_DELAY)
+                        token_status[name] = (added_count, filtered_count, "Processing")
+                        await asyncio.sleep(PER_BATCH_DELAY)
 
                     except Exception as e:
                         logging.error(f"Error processing {name}: {e}")
-                        token_status[name] = (added_count, filtered_count, f"Retry {attempts}/{max_attempts}")
+                        token_status[name] = (added_count, filtered_count, "Retrying")
                         await asyncio.sleep(PER_ERROR_DELAY)
 
-                    await asyncio.sleep(PER_BATCH_DELAY)
-
-                # Final status
-                if not state["running"]:
-                    status = "Stopped"
-                elif empty_batches >= 3:
-                    status = "No more users"
-                elif attempts >= max_attempts:
-                    status = "Max attempts"
-                else:
-                    status = "Done"
-
-                token_status[name] = (added_count, filtered_count, status)
+                token_status[name] = (added_count, filtered_count, "Stopped")
                 return added_count
 
         except Exception as e:
@@ -344,12 +316,11 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
             token_status[name] = (added_count, filtered_count, f"Failed: {str(e)[:20]}...")
             return added_count
 
-    # Improved UI updater
     async def _refresh_ui():
         last_message = ""
         update_count = 0
-        update_interval = 1  # Update every seconds
-        force_update_interval = 5  # Force update every 5 iterations
+        update_interval = 2
+        force_update_interval = 5
 
         while state["running"]:
             try:
@@ -357,34 +328,32 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                     "🔄 <b>Friend Requests AIO Status</b>\n",
                     "<pre>Account   │Added │Filter│Status</pre>"
                 ]
-                
-                # Check if there are any active processing accounts
+
                 any_processing = False
                 for name, (added, filtered, status) in token_status.items():
                     if status == "Processing" or "Retry" in status or "Waiting" in status:
                         any_processing = True
                     display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
                     lines.append(f"<pre>{display} │{added:>5} │{filtered:>6}│{status}</pre>")
-                
-                # Add total counter and elapsed time
+
                 elapsed = time.time() - state.get("start_time", time.time())
                 total_added = state.get("total_added_friends", 0)
                 speed_per_min = (total_added / elapsed) * 60 if elapsed > 0 else 0
-                
+
                 lines.append(f"\n<b>Total Added:</b> {total_added} | <b>Speed:</b> {speed_per_min:.2f}/min")
                 lines.append(f"<b>Elapsed:</b> {int(elapsed//60)}m {int(elapsed%60)}s")
-                
-                # Add animated indicator to show it's actively updating
-                spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                spinner = spinners[update_count % len(spinners)]
-                lines.append(f"\n{spinner} <i>Live update...</i>")
-                
+
+                if not any_processing and not state["running"]:
+                    lines.append(f"\n✅ <b>All workers completed!</b>")
+                else:
+                    spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                    spinner = spinners[update_count % len(spinners)]
+                    lines.append(f"\n{spinner} <i>Live update...</i>")
+
                 current_message = "\n".join(lines)
-                
-                # Force update periodically even if content is the same
                 update_count += 1
                 force_update = (update_count % force_update_interval == 0)
-                
+
                 if current_message != last_message or force_update:
                     try:
                         await bot.edit_message_text(
@@ -398,12 +367,10 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                     except Exception as e:
                         if "message is not modified" not in str(e):
                             logging.error(f"Status update failed: {e}")
-                
+
             except Exception as e:
                 logging.error(f"UI updater exception: {e}")
-                # Continue despite errors
-                
-            # Update frequently to make status feel "live"
+
             await asyncio.sleep(update_interval)
 
     # Initialize status
@@ -419,29 +386,21 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         reply_markup=stop_markup
     )
 
-    # Start UI updater first, then workers
+    # Start UI updater and workers
     ui_task = asyncio.create_task(_refresh_ui())
-    
-    # Start workers
     worker_tasks = [asyncio.create_task(_worker(token_obj, idx)) for idx, token_obj in enumerate(tokens, 1)]
-    
-    # Wait for workers to complete
     results = await asyncio.gather(*worker_tasks, return_exceptions=True)
 
-    # Set state to not running after workers complete
+    # Set state to not running
     state["running"] = False
-    
-    # Give the UI task a moment to do final updates
     await asyncio.sleep(1)
-    
-    # Cancel UI task
     ui_task.cancel()
     try:
         await ui_task
     except asyncio.CancelledError:
         pass
 
-    # Final unpin and message
+    # Unpin message
     try:
         if state.get("pinned_message_id"):
             await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
@@ -449,7 +408,9 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     except Exception as e:
         logging.error(f"Unpin failed: {e}")
 
+    # Final status
     total_added = sum(result for result in results if isinstance(result, int))
+    total_filtered = sum(filtered for _, (added, filtered, _) in token_status.items())
     successful_tokens = sum(1 for result in results if isinstance(result, int))
     duration = time.time() - state.get("start_time", time.time())
     speed_per_min = (total_added / duration) * 60 if duration > 0 else 0
@@ -478,5 +439,5 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
     await bot.send_message(
         user_id,
-        f"{'⚠️ Process stopped' if not state['running'] else '✅ Friend requests completed'}!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
+        f"{'⚠️ Process stopped' if state['stopped'] else '✅ Friend requests completed'}!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
     )
