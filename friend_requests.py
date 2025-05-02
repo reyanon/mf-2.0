@@ -387,7 +387,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         while state["running"]:
             try:
                 # Simplified header format
-                header = f"🔄 <b>AIO Requests </b> | <b>Total Added:</b> {state['total_added_friends']}"
+                header = f"🔄 <b>AIO Requests Sending</b>|<b>Total:</b> {state['total_added_friends']}"
                 
                 lines = [
                     header,
@@ -433,7 +433,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
     # Show initial table before starting workers
     # Simplified initial header
-    initial_header = "🔄 <b>AIO Requests </b> | <b>Total Added:</b> 0"
+    initial_header = "🔄 <b>AIO Friend Requests Status</b>"
     
     initial_lines = [
         initial_header,
@@ -460,6 +460,10 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
 
     # Set state to not running
     state["running"] = False
+    
+    # This ensures we keep track of whether the process was stopped by user
+    was_stopped = state.get("stopped", False)
+    
     await asyncio.sleep(1)
     ui_task.cancel()
     try:
@@ -479,8 +483,11 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     total_added = sum(result for result in results if isinstance(result, int))
     total_filtered = sum(filtered for _, (added, filtered, _) in token_status.items())
     
+    # Check if process was stopped by user
+    was_stopped = state.get("stopped", False)
+    
     # Simplified final header with appropriate completion message
-    completion_status = "⚠️ Process Stopped" if state.get("stopped", False) else "✅ AIO Requests Completed"
+    completion_status = "⚠️ AIO Requests Stopped" if was_stopped else "✅ AIO Requests Completed"
     final_header = f"🔄 <b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
     
     final_lines = [
@@ -505,7 +512,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
             logging.error(f"Final status update failed: {e}")
 
     # Final message with appropriate completion status
-    completion_message = "⚠️ Process stopped" if state.get("stopped", False) else "✅ Friend requests completed"
+    completion_message = "⚠️ AIO Requests stopped" if was_stopped else "✅ AIO requests completed"
     await bot.send_message(
         user_id,
         f"{completion_message}!\nTotal Added: {total_added}\nTotal Filtered: {total_filtered}"
