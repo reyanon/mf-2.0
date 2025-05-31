@@ -136,21 +136,26 @@ def get_settings_menu(user_id):
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+# Define a set instead of a dictionary
+permanent_access = set()
+
 @router.message(Command("password"))
 async def password_command(message: types.Message):
     user_id = message.chat.id
     command_text = message.text.strip()
+
     if len(command_text.split()) < 2:
         await message.reply("Please provide the password. Usage: /password <password>")
         return
 
     provided_password = command_text.split()[1]
     if provided_password == TEMP_PASSWORD:
-        password_access[user_id] = datetime.now() + timedelta(hours=1)
-        await message.reply("Access granted for one hour.")
+        permanent_access.add(user_id)
+        await message.reply("✅ Permanent access granted.")
         await bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
     else:
-        await message.reply("Incorrect password.")
+        await message.reply("❌ Incorrect password.")
+
 
 @router.message(Command("start"))
 async def start_command(message: types.Message):
