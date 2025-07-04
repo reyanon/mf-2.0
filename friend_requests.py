@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db import get_spam_filter, is_already_sent, add_sent_id, get_active_tokens, get_current_account, get_already_sent_ids # Import the new function
 from collections import defaultdict
 import time
+from dateutil import parser
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -50,17 +51,59 @@ async def fetch_users(session, token):
         logging.error(f"Fetch users failed: {e}")
         return []
 
-def format_user_details(user):
-    """Format user details for display"""
+def format_user(user):
+    def time_ago(dt_str):
+        if not dt_str:
+            return "N/A"
+        try:
+            dt = parser.isoparse(dt_str)
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            diff = now - dt
+            minutes = int(diff.total_seconds() // 60)
+            if minutes < 1:
+                return "just now"
+            elif minutes < 60:
+                return f"{minutes} min ago"
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours} hr ago"
+            days = hours // 24
+            return f"{days} day(s) ago"
+        except Exception:
+            return "unknown"
+    last_active = time_ago(user.get("recentAt"))
+    nationality = html.escape(user.get('nationalityCode', 'N/A'))
+    height = html.escape(str(user.get('height', 'N/A')))
+    if "|" in height:
+        height_val, height_unit = height.split("|", 1)
+        height = f"{height_val.strip()} {height_unit.strip()}"
     return (
-        f"<b>User ID:</b> {html.escape(str(user['_id']))}\n"
         f"<b>Name:</b> {html.escape(user.get('name', 'N/A'))}\n"
+        f"<b>ID:</b> <code>{html.escape(user.get('_id', 'N/A'))}</code>\n"
+        f"<b>Nationality:</b> {nationality}\n"
+        f"<b>Height:</b> {height}\n"
         f"<b>Description:</b> {html.escape(user.get('description', 'N/A'))}\n"
         f"<b>Birth Year:</b> {html.escape(str(user.get('birthYear', 'N/A')))}\n"
+        f"<b>Platform:</b> {html.escape(user.get('platform', 'N/A'))}\n"
+        f"<b>Profile Score:</b> {html.escape(str(user.get('profileScore', 'N/A')))}\n"
         f"<b>Distance:</b> {html.escape(str(user.get('distance', 'N/A')))} km\n"
         f"<b>Language Codes:</b> {html.escape(', '.join(user.get('languageCodes', [])))}\n"
+        f"<b>Last Active:</b> {last_active}\n"
         "Photos: " + ' '.join([f"<a href='{html.escape(url)}'>Photo</a>" for url in user.get('photoUrls', [])])
     )
+
+def format_time_used(start_time, end_time):
+    delta = end_time - start_time
+    total_seconds = int(delta.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    elif minutes > 0:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
 
 async def process_users(session, users, token, user_id, bot, target_channel_id, token_name=None, token_status=None):
     """Process a batch of users and send friend requests.
@@ -136,41 +179,41 @@ async def process_users(session, users, token, user_id, bot, target_channel_id, 
                     limit_reached = True
                     break
 
-            # Add to sent IDs if spam filter is enabled
-            if get_spam_filter(user_id):
-                add_sent_id(user_id, "request", user["_id"])
+                # Add to sent IDs if spam filter is enabled
+                if get_spam_filter(user_id):
+                    add_sent_id(user_id, "request", user["_id"])
 
-            # Format and send user details
-            details = format_user_details(user)
-            await bot.send_message(chat_id=user_id, text=details, parse_mode="HTML")
-            
-            # Update counters
-            added_count += 1
-            state["total_added_friends"] += 1
+                # Format and send user details
+                details = format_user(user) # CHANGED THIS LINE
+                await bot.send_message(chat_id=user_id, text=details, parse_mode="HTML")
+                
+                # Update counters
+                added_count += 1
+                state["total_added_friends"] += 1
 
-            # Update status message based on which function called this
-            if token_status and token_name in token_status:
-                # For process_all_tokens
-                current = token_status[token_name]
-                token_status[token_name] = (current[0] + 1, current[1], "Processing")
-            else:
-                # For run_requests
-                if state["running"] and state["status_message_id"]:
-                    try:
-                        await bot.edit_message_text(
-                            chat_id=user_id,
-                            message_id=state["status_message_id"],
-                            text=f"{token_name}: Friend request sending: {state['total_added_friends']}",
-                            reply_markup=stop_markup
-                        )
-                    except Exception as e:
-                        # Ignore "message is not modified" errors
-                        if "message is not modified" not in str(e):
-                            logging.error(f"Error updating status message: {e}")
+                # Update status message based on which function called this
+                if token_status and token_name in token_status:
+                    # For process_all_tokens
+                    current = token_status[token_name]
+                    token_status[token_name] = (current[0] + 1, current[1], "Processing")
+                else:
+                    # For run_requests
+                    if state["running"] and state["status_message_id"]:
+                        try:
+                            await bot.edit_message_text(
+                                chat_id=user_id,
+                                message_id=state["status_message_id"],
+                                text=f"{token_name}: Friend request sending: {state['total_added_friends']}",
+                                reply_markup=stop_markup
+                            )
+                        except Exception as e:
+                            # Ignore "message is not modified" errors
+                            if "message is not modified" not in str(e):
+                                logging.error(f"Error updating status message: {e}")
 
-            # Apply delay after processing each user
-            await asyncio.sleep(PER_USER_DELAY)
-            
+                # Apply delay after processing each user
+                await asyncio.sleep(PER_USER_DELAY)
+                
         except Exception as e:
             logging.error(f"Error processing user with {token_name}: {e}")
             await asyncio.sleep(1)  # Short delay after error
