@@ -142,8 +142,8 @@ start_markup = InlineKeyboardMarkup(inline_keyboard=[
 
 send_request_markup = InlineKeyboardMarkup(inline_keyboard=[
     [
-        InlineKeyboardButton(text="▶️ Start Request", callback_data="start"),
-        InlineKeyboardButton(text="🔄 Request All", callback_data="start_all")
+        InlineKeyboardButton(text="▶ Start Request", callback_data="start"),
+        InlineKeyboardButton(text="▶ Request All", callback_data="start_all")
     ],
     [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_menu")]
 ])
