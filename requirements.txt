@@ -2,3 +2,4 @@ aiogram
 aiohttp
 requests
 pymongo
+python-dateutil
