@@ -768,7 +768,7 @@ async def callback_handler(callback_query: CallbackQuery):
             
             view_text += (
                 f"<b>{i}.</b> <code>{col['collection_name']}</code>\n"
-                f"   👤 Accounts: {accounts} | 📅 Created: {created_str}\n\n"
+                f"    👤 Accounts: {accounts} | 📅 Created: {created_str}\n\n"
             )
 
         if len(collections) > 10:
@@ -861,7 +861,7 @@ async def callback_handler(callback_query: CallbackQuery):
         )
         return
 
-    if data == "send_request_menu":
+    elif data == "send_request_menu":
         await callback_query.message.edit_text(
             "🚀 <b>Send Request Options</b>\n\n"
             "Choose your request type:",
@@ -890,8 +890,8 @@ async def callback_handler(callback_query: CallbackQuery):
         return
 
     elif data in ["filter_gender", "filter_age", "filter_nationality", "filter_back"] or \
-         data.startswith("filter_gender_") or data.startswith("filter_age_") or \
-         data.startswith("filter_nationality_"):
+          data.startswith("filter_gender_") or data.startswith("filter_age_") or \
+          data.startswith("filter_nationality_"):
         await set_filter(callback_query)
         return
 
@@ -994,7 +994,7 @@ async def callback_handler(callback_query: CallbackQuery):
             await callback_query.answer("❌ Invalid account selected.")
         return
         
-        elif data.startswith("toggle_status_"):
+    elif data.startswith("toggle_status_"): # This was the line causing the error
         idx = int(data.split("_")[-1])
         tokens = get_tokens(user_id)
         if 0 <= idx < len(tokens):
@@ -1041,7 +1041,6 @@ async def callback_handler(callback_query: CallbackQuery):
         else:
             await callback_query.answer("❌ Invalid account selected.")
         return
-
 
     elif data == "toggle_spam_filter":
         new_state = not get_spam_filter(user_id)
@@ -1119,7 +1118,9 @@ async def callback_handler(callback_query: CallbackQuery):
                 state["status_message_id"] = status_message.message_id
                 state["pinned_message_id"] = status_message.message_id
                 
-                await bot.pin_chat_message(chat_id=user_id, message_id=state["status_message_id"])
+                # Ensure 'bot' is accessible here (passed as an argument or global)
+                if bot:
+                    await bot.pin_chat_message(chat_id=user_id, message_id=state["status_message_id"])
                 
                 asyncio.create_task(run_requests(user_id, bot, TARGET_CHANNEL_ID))
                 await callback_query.answer("🚀 Requests started!")
@@ -1141,10 +1142,10 @@ async def callback_handler(callback_query: CallbackQuery):
             if not tokens:
                 await callback_query.answer("❌ No active tokens found.", show_alert=True)
                 return
-        
+            
             state["running"] = True
             state["total_added_friends"] = 0
-        
+            
             try:
                 msg = await callback_query.message.edit_text(
                     f"🔄 <b>Starting Multi-Account Requests</b>\n\n"
@@ -1156,7 +1157,9 @@ async def callback_handler(callback_query: CallbackQuery):
                 state["status_message_id"] = msg.message_id
                 state["pinned_message_id"] = msg.message_id
                 
-                await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
+                # Ensure 'bot' is accessible here
+                if bot:
+                    await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
                 
                 asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID))
                 await callback_query.answer("🚀 Multi-account processing started!")
@@ -1187,7 +1190,7 @@ async def callback_handler(callback_query: CallbackQuery):
                 parse_mode="HTML"
             )
             await callback_query.answer("⏹️ Requests stopped.")
-            if state.get("pinned_message_id"):
+            if state.get("pinned_message_id") and bot: # Added check for 'bot'
                 await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
                 state["pinned_message_id"] = None
 
@@ -1206,7 +1209,8 @@ async def callback_handler(callback_query: CallbackQuery):
                 state["status_message_id"] = status_message.message_id
                 state["pinned_message_id"] = status_message.message_id
                 state["stop_markup"] = stop_markup
-                await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id)
+                if bot: # Added check for 'bot'
+                    await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id)
                 asyncio.create_task(run_all_countries(user_id, state, bot, get_current_account))
                 await callback_query.answer("🌍 All Countries feature started!")
             except Exception as e:
