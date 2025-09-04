@@ -8,10 +8,14 @@ from db import get_individual_spam_filter, is_already_sent, add_sent_id, get_act
 from collections import defaultdict
 import time
 from dateutil import parser
+import urllib.parse
+import random 
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# Filter rotation to force fresh data
+filter_rotation_state = {}
 
 # ✅ Speed configuration 
 PER_USER_DELAY = 2     # Delay between each user added
@@ -34,9 +38,22 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Stop Requests", callback_data="stop")]
 ])
 
-async def fetch_users(session, token):
-    """Fetch users from the API for friend requests"""
-    url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
+async def fetch_users(session, token, user_id=None):
+    """
+    Fetch a fresh list of users from the API by adding a small, random
+    "jitter" to the GPS coordinates to bypass the server's cache.
+    This method does NOT change your saved filters.
+    """
+    # Original coordinates
+    base_lat = 33.437198638916016
+    base_lng = -112.0613784790039
+
+    # Add a tiny random value to make the location unique for each request
+    lat = base_lat + random.uniform(-0.0001, 0.0001)
+    lng = base_lng + random.uniform(-0.0001, 0.0001)
+
+    url = f"https://api.meeff.com/user/explore/v2?lng={lng}&lat={lat}&locale=en"
+    
     headers = {"meeff-access-token": token, "Connection": "keep-alive"}
     try:
         async with session.get(url, headers=headers) as response:
@@ -46,10 +63,14 @@ async def fetch_users(session, token):
             if response.status != 200:
                 logging.error(f"Failed to fetch users: {response.status}")
                 return []
+            
+            logging.info("Successfully fetched a fresh user list using location jitter.")
             return (await response.json()).get("users", [])
+            
     except Exception as e:
         logging.error(f"Fetch users failed: {e}")
         return []
+
 
 def format_user(user):
     def time_ago(dt_str):
@@ -266,7 +287,7 @@ async def run_requests(user_id, bot, target_channel_id):
 
                 # Fetch users
                 try:
-                    users = await fetch_users(session, token)
+                    users = await fetch_users(session, token, user_id)
                     state["batch_index"] += 1
                     
                     if not users or len(users) == 0:
@@ -376,7 +397,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
             async with aiohttp.ClientSession() as session:
                 while state["running"]:
                     try:
-                        users = await fetch_users(session, token)
+                        users = await fetch_users(session, token, user_id)
                         
                         if users is None:
                             token_status[name] = (added_count, filtered_count, "Rate limited")
@@ -396,7 +417,7 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                         
                         # Use the shared process_users function with token_status
                         limit_reached, batch_added, batch_filtered = await process_users(
-                            session, users, token, user_id, bot, target_channel_id, 
+                            session, users, token, user_id, bot, target_channel_id,
                             token_name=name, token_status=token_status
                         )
                         
