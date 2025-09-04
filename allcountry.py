@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import logging
+from online_status import set_online_status, refresh_user_location
 
 countries = [
     "AF", "AL", "DZ", "AD", "AO", "AG", "AR", "AM", "AU", "AT", "AZ", "BS", "BH", "BD",
@@ -90,6 +91,11 @@ async def run_all_countries(user_id, state, bot, get_current_account):
             text="No active account found. Please set an account before starting All Countries feature."
         )
         return
+    
+    # Set account online before starting
+    logging.info("Setting account online for All Countries feature...")
+    await set_online_status(token, True)
+    await refresh_user_location(token)
 
     headers = dict(BASE_HEADERS)
     headers["meeff-access-token"] = token
