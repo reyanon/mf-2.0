@@ -1,3 +1,4 @@
+
 import aiohttp
 import asyncio
 import logging
@@ -5,7 +6,6 @@ from datetime import datetime
 from db import is_already_sent, add_sent_id, bulk_add_sent_ids
 from typing import List, Dict
 from aiogram import types
-from online_status import set_online_status, refresh_user_location
 
 CHATROOM_URL = "https://api.meeff.com/chatroom/dashboard/v1"
 MORE_CHATROOMS_URL = "https://api.meeff.com/chatroom/more/v1"
