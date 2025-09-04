@@ -12,7 +12,8 @@ SEND_MESSAGE_URL = "https://api.meeff.com/chat/send/v2"
 HEADERS = {
     'User-Agent': "okhttp/4.12.0",
     'Accept-Encoding': "gzip",
-    'content-type': "application/json; charset=utf-8"
+    'content-type': "application/json; charset=utf-8",
+    'X-Device-Info': "iPhone15Pro-iOS17.5.1-6.6.2"
 }
 
 async def fetch_chatrooms(session, token, from_date=None):

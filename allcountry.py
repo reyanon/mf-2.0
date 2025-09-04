@@ -24,7 +24,8 @@ REQUESTS_PER_COUNTRY = 2
 BASE_HEADERS = {
     "User-Agent": "okhttp/4.12.0",
     "Accept-Encoding": "gzip",
-    "Content-Type": "application/json; charset=utf-8"
+    "Content-Type": "application/json; charset=utf-8",
+    "X-Device-Info": "iPhone15Pro-iOS17.5.1-6.6.2"
 }
 
 async def update_country_filter(session, headers, country_code):

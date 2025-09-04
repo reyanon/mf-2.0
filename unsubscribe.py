@@ -8,7 +8,8 @@ MORE_CHATROOMS_URL = "https://api.meeff.com/chatroom/more/v1"
 HEADERS = {
     'User-Agent': "okhttp/4.12.0",
     'Accept-Encoding': "gzip",
-    'content-type': "application/json; charset=utf-8"
+    'content-type': "application/json; charset=utf-8",
+    'X-Device-Info': "iPhone15Pro-iOS17.5.1-6.6.2"
 }
 
 async def fetch_chatrooms(token, from_date=None):

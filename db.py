@@ -533,6 +533,46 @@ def set_spam_filter(telegram_user_id, status: bool):
     )
     return True
 
+# Set individual spam filter for specific features
+def set_individual_spam_filter(telegram_user_id, filter_type: str, status: bool):
+    """Set spam filter for individual features: chatroom, request, lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "settings"},
+        {"$set": {f"spam_filter_{filter_type}": status}},
+        upsert=True
+    )
+    return True
+
+# Get individual spam filter status
+def get_individual_spam_filter(telegram_user_id: int, filter_type: str) -> bool:
+    """Get spam filter status for individual features: chatroom, request, lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    return settings.get(f"spam_filter_{filter_type}", False) if settings else False
+
+# Get all spam filter settings
+def get_all_spam_filters(telegram_user_id: int) -> dict:
+    """Get all spam filter settings"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return {"chatroom": False, "request": False, "lounge": False}
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    if not settings:
+        return {"chatroom": False, "request": False, "lounge": False}
+    
+    return {
+        "chatroom": settings.get("spam_filter_chatroom", False),
+        "request": settings.get("spam_filter_request", False),
+        "lounge": settings.get("spam_filter_lounge", False)
+    }
 # Get spam filter status for a user
 def get_spam_filter(telegram_user_id: int) -> bool:
     if not _ensure_user_collection_exists(telegram_user_id):

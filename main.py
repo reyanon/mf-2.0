@@ -15,6 +15,7 @@ from db import (
     set_user_filters, get_user_filters, set_spam_filter, get_spam_filter, 
     is_already_sent, add_sent_id, toggle_token_status, get_active_tokens, 
     get_token_status, set_account_active, get_info_card,
+    set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,
     # New DB management functions
     list_all_collections, get_collection_summary, connect_to_collection,
     rename_user_collection, transfer_to_user, get_current_collection_info
@@ -74,7 +75,8 @@ def get_settings_menu(user_id):
     if user_id not in user_states:
         user_states[user_id] = {}
     
-    spam_on = get_spam_filter(user_id)
+    spam_filters = get_all_spam_filters(user_id)
+    any_spam_on = any(spam_filters.values())
     
     buttons = [
         [
@@ -83,8 +85,8 @@ def get_settings_menu(user_id):
         ],
         [
             InlineKeyboardButton(
-                text=f"🛡️ Spam Filter: {'ON ✅' if spam_on else 'OFF ❌'}",
-                callback_data="toggle_spam_filter"
+                text=f"🛡️ Spam Filters: {'ON ✅' if any_spam_on else 'OFF ❌'}",
+                callback_data="spam_filter_menu"
             )
         ],
         [
@@ -121,6 +123,44 @@ def get_unsubscribe_menu():
             InlineKeyboardButton(text="Unsubscribe All", callback_data="unsub_all")
         ],
         [InlineKeyboardButton(text="🔙 Back", callback_data="back_to_menu")]
+    ])
+
+def get_spam_filter_menu(user_id):
+    """Get individual spam filter controls menu"""
+    spam_filters = get_all_spam_filters(user_id)
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=f"💬 Chatroom: {'ON ✅' if spam_filters['chatroom'] else 'OFF ❌'}",
+                callback_data="toggle_spam_chatroom"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"👥 Requests: {'ON ✅' if spam_filters['request'] else 'OFF ❌'}",
+                callback_data="toggle_spam_request"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"🏛️ Lounge: {'ON ✅' if spam_filters['lounge'] else 'OFF ❌'}",
+                callback_data="toggle_spam_lounge"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="🔄 Toggle All", callback_data="toggle_spam_all"),
+            InlineKeyboardButton(text="🔙 Back", callback_data="settings_menu")
+        ]
+    ])
+
+def get_account_view_menu(account_idx):
+    """Get account view menu with delete option"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🗑️ Delete Account", callback_data=f"confirm_delete_{account_idx}"),
+            InlineKeyboardButton(text="🔙 Back", callback_data="manage_accounts")
+        ]
     ])
 
 def get_confirmation_menu(action_type):
@@ -250,7 +290,7 @@ async def send_lounge_all(message: types.Message):
     if not active_tokens_data:
         return await message.reply("🔍 No active tokens found.")
         
-    spam_enabled = get_spam_filter(user_id)
+    spam_enabled = get_individual_spam_filter(user_id, "lounge")
     status = await message.reply(
         f"⏳ <b>Starting Lounge Messages</b>\n\n"
         f"📊 Active tokens: {len(active_tokens_data)}\n"
@@ -295,7 +335,7 @@ async def lounge_command(message: types.Message):
         return
 
     custom_message = " ".join(command_text.split()[1:])
-    spam_enabled = get_spam_filter(user_id)
+    spam_enabled = get_individual_spam_filter(user_id, "lounge")
     
     status_message = await message.reply(
         f"⏳ <b>Starting Lounge Messaging</b>\n\n"
@@ -341,7 +381,7 @@ async def send_to_all_command(message: types.Message):
         return
 
     custom_message = " ".join(command_text.split()[1:])
-    spam_enabled = get_spam_filter(user_id)
+    spam_enabled = get_individual_spam_filter(user_id, "chatroom")
     
     status_message = await message.reply(
         f"⏳ <b>Starting Chatroom Messages</b>\n\n"
@@ -404,7 +444,7 @@ async def send_chat_all(message: types.Message):
         await message.reply("🔍 No active tokens found.")
         return
         
-    spam_enabled = get_spam_filter(user_id)
+    spam_enabled = get_individual_spam_filter(user_id, "chatroom")
 
     status = await message.reply(
         f"⏳ <b>Starting Multi-Account Chatroom</b>\n\n"
@@ -930,10 +970,6 @@ async def callback_handler(callback_query: CallbackQuery):
                 InlineKeyboardButton(
                     text="👁️", # Only emoji for view
                     callback_data=f"view_account_{i}"
-                ),
-                InlineKeyboardButton(
-                    text="🗑️", # Only emoji for delete
-                    callback_data=f"confirm_delete_{i}"
                 )
             ])
 
@@ -957,16 +993,34 @@ async def callback_handler(callback_query: CallbackQuery):
         tokens = get_tokens(user_id)
         if 0 <= idx < len(tokens):
             token = tokens[idx]["token"]
+            token_obj = tokens[idx]
             info_card = get_info_card(user_id, token)
+            
+            # Enhanced account view with full token and delete option
+            account_details = (
+                f"👤 <b>Account Details</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"<b>📛 Name:</b> <code>{token_obj.get('name', 'Unknown')}</code>\n"
+                f"<b>📧 Email:</b> <code>{token_obj.get('email', 'Not available')}</code>\n"
+                f"<b>🔑 Token:</b> <code>{token}</code>\n"
+                f"<b>✅ Status:</b> {'Active' if token_obj.get('active', True) else 'Inactive'}\n"
+                f"<b>🔄 Current:</b> {'Yes' if get_current_account(user_id) == token else 'No'}\n\n"
+            )
+            
             if info_card:
-                await callback_query.message.answer(
-                    info_card,
+                full_details = account_details + "📱 <b>Profile Information:</b>\n" + info_card
+                await callback_query.message.edit_text(
+                    full_details,
+                    reply_markup=get_account_view_menu(idx),
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
-                await callback_query.answer("📱 Account info displayed below")
             else:
-                await callback_query.answer("❌ No information card found for this account.", show_alert=True)
+                await callback_query.message.edit_text(
+                    account_details + "❌ <b>No additional profile information available</b>",
+                    reply_markup=get_account_view_menu(idx),
+                    parse_mode="HTML"
+                )
         else:
             await callback_query.answer("❌ Invalid account selected.")
         return
@@ -1021,8 +1075,7 @@ async def callback_handler(callback_query: CallbackQuery):
                 buttons.append([
                     InlineKeyboardButton(text=account_name_display, callback_data=f"set_account_{i}"),
                     InlineKeyboardButton(text=status_emoji, callback_data=f"toggle_status_{i}"),
-                    InlineKeyboardButton(text="👁️", callback_data=f"view_account_{i}"),
-                    InlineKeyboardButton(text="🗑️", callback_data=f"confirm_delete_{i}")
+                    InlineKeyboardButton(text="👁️", callback_data=f"view_account_{i}")
                 ])
 
             buttons.append([
@@ -1043,29 +1096,79 @@ async def callback_handler(callback_query: CallbackQuery):
         return
 
     elif data == "toggle_spam_filter":
-        new_state = not get_spam_filter(user_id)
-        set_spam_filter(user_id, new_state)
-        await callback_query.answer(
-            f"🛡️ Spam Filter {'Enabled ✅' if new_state else 'Disabled ❌'}"
+        # Show individual spam filter menu instead
+        spam_filters = get_all_spam_filters(user_id)
+        filter_text = (
+            "🛡️ <b>Spam Filter Settings</b>\n\n"
+            "Control spam filters for each feature individually:\n\n"
+            f"💬 <b>Chatroom:</b> {'ON ✅' if spam_filters['chatroom'] else 'OFF ❌'}\n"
+            f"👥 <b>Requests:</b> {'ON ✅' if spam_filters['request'] else 'OFF ❌'}\n"
+            f"🏛️ <b>Lounge:</b> {'ON ✅' if spam_filters['lounge'] else 'OFF ❌'}\n\n"
+            "Spam filters prevent sending duplicate messages to the same users."
         )
-        
-        # Refresh settings menu
-        settings_text = "⚙️ <b>Settings Menu</b>\n\nChoose an option below:"
         
         await callback_query.message.edit_text(
-            settings_text,
-            reply_markup=get_settings_menu(user_id),
+            filter_text,
+            reply_markup=get_spam_filter_menu(user_id),
             parse_mode="HTML"
         )
+        return
+
+    elif data == "spam_filter_menu":
+        spam_filters = get_all_spam_filters(user_id)
+        filter_text = (
+            "🛡️ <b>Spam Filter Settings</b>\n\n"
+            "Control spam filters for each feature individually:\n\n"
+            f"💬 <b>Chatroom:</b> {'ON ✅' if spam_filters['chatroom'] else 'OFF ❌'}\n"
+            f"👥 <b>Requests:</b> {'ON ✅' if spam_filters['request'] else 'OFF ❌'}\n"
+            f"🏛️ <b>Lounge:</b> {'ON ✅' if spam_filters['lounge'] else 'OFF ❌'}\n\n"
+            "Spam filters prevent sending duplicate messages to the same users."
+        )
+        
+        await callback_query.message.edit_text(
+            filter_text,
+            reply_markup=get_spam_filter_menu(user_id),
+            parse_mode="HTML"
+        )
+        return
+
+    elif data.startswith("toggle_spam_"):
+        filter_type = data.split("_")[-1]
+        if filter_type in ["chatroom", "request", "lounge"]:
+            current_status = get_individual_spam_filter(user_id, filter_type)
+            new_status = not current_status
+            set_individual_spam_filter(user_id, filter_type, new_status)
+            
+            await callback_query.answer(
+                f"🛡️ {filter_type.capitalize()} spam filter {'enabled ✅' if new_status else 'disabled ❌'}"
+            )
+            
+            # Refresh spam filter menu
+            callback_query.data = "spam_filter_menu"
+            await callback_handler(callback_query)
+        elif filter_type == "all":
+            # Toggle all spam filters
+            spam_filters = get_all_spam_filters(user_id)
+            any_on = any(spam_filters.values())
+            new_status = not any_on
+            
+            for filter_name in ["chatroom", "request", "lounge"]:
+                set_individual_spam_filter(user_id, filter_name, new_status)
+            
+            await callback_query.answer(
+                f"🛡️ All spam filters {'enabled ✅' if new_status else 'disabled ❌'}"
+            )
+            
+            # Refresh spam filter menu
+            callback_query.data = "spam_filter_menu"
+            await callback_handler(callback_query)
         return
 
     elif data.startswith("set_account_"):
         idx = int(data.split("_")[-1])
         tokens = get_tokens(user_id)
         if 0 <= idx < len(tokens):
-            if not tokens[idx].get("active", True):
-                await callback_query.answer("❌ This account is inactive. Activate it first.", show_alert=True)
-                return
+            # Remove the active status dependency for setting current account
             set_current_account(user_id, tokens[idx]["token"])
             await callback_query.answer(f"✅ Set {tokens[idx]['name']} as current account")
             
