@@ -4,6 +4,7 @@ import aiohttp
 import logging
 from typing import List, Dict
 from aiogram import types
+from online_status import set_online_status, refresh_user_location
 
 LOUNGE_URL = "https://api.meeff.com/lounge/dashboard/v1"
 CHATROOM_URL = "https://api.meeff.com/chatroom/open/v2"
@@ -223,6 +224,17 @@ async def send_lounge_all_tokens(
     Process lounge messaging for all tokens, fetching all batches of users.
     Uses the same pagination logic as send_lounge.
     """
+    # Set all accounts online first
+    logging.info("Setting all accounts online for lounge messaging...")
+    online_tasks = []
+    for token_data in tokens_data:
+        token = token_data["token"]
+        online_tasks.append(set_online_status(token, True))
+        online_tasks.append(refresh_user_location(token))
+    
+    await asyncio.gather(*online_tasks, return_exceptions=True)
+    logging.info("All accounts set to online status")
+    
     logger.info(f"Spam filter enabled: {spam_enabled}")
     token_status: Dict[str, Tuple[int, int, str]] = {}
     sent_ids = await is_already_sent(chat_id, "lounge", None, bulk=True) if spam_enabled else set()

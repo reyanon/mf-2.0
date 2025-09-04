@@ -8,6 +8,7 @@ from db import get_individual_spam_filter, is_already_sent, add_sent_id, get_act
 from collections import defaultdict
 import time
 from dateutil import parser
+from online_status import set_online_status, refresh_user_location
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -228,21 +229,26 @@ async def run_requests(user_id, bot, target_channel_id):
     state["batch_index"] = 0
     state["running"] = True
     
+    # Get current token and set online status
+    token = get_current_account(user_id)
+    if not token:
+        await bot.edit_message_text(
+            chat_id=user_id,
+            message_id=state["status_message_id"],
+            text="No active account found. Please set an account before starting requests.",
+            reply_markup=None
+        )
+        state["running"] = False
+        return
+    
+    # Set account online and refresh location
+    logging.info("Setting account online and refreshing location...")
+    await set_online_status(token, True)
+    await refresh_user_location(token)
+    
     async with aiohttp.ClientSession() as session:
         while state["running"]:
             try:
-                # Get current token
-                token = get_current_account(user_id)
-                if not token:
-                    await bot.edit_message_text(
-                        chat_id=user_id,
-                        message_id=state["status_message_id"],
-                        text="No active account found. Please set an account before starting requests.",
-                        reply_markup=None
-                    )
-                    state["running"] = False
-                    return
-
                 # Get token name
                 tokens = get_active_tokens(user_id)
                 token_name = "Default Account"
@@ -344,6 +350,17 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     state["total_added_friends"] = 0
     state["running"] = True
     state["stopped"] = False
+    
+    # Set all accounts online first
+    logging.info("Setting all accounts online...")
+    online_tasks = []
+    for token_obj in tokens:
+        token = token_obj["token"]
+        online_tasks.append(set_online_status(token, True))
+        online_tasks.append(refresh_user_location(token))
+    
+    await asyncio.gather(*online_tasks, return_exceptions=True)
+    logging.info("All accounts set to online status")
 
     # Initialize status message
     if not state.get("status_message_id"):
