@@ -533,7 +533,148 @@ def set_spam_filter(telegram_user_id, status: bool):
     )
     return True
 
+# Set individual spam filter for specific features
+def set_individual_spam_filter(telegram_user_id, filter_type: str, status: bool):
+    """Set spam filter for individual features: chatroom, request, lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "settings"},
+        {"$set": {f"spam_filter_{filter_type}": status}},
+        upsert=True
+    )
+    return True
+
+# Get individual spam filter status
+def get_individual_spam_filter(telegram_user_id: int, filter_type: str) -> bool:
+    """Get spam filter status for individual features: chatroom, request, lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    return settings.get(f"spam_filter_{filter_type}", False) if settings else False
+
+# Get all spam filter settings
+def get_all_spam_filters(telegram_user_id: int) -> dict:
+    """Get all spam filter settings"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return {"chatroom": False, "request": False, "lounge": False}
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    if not settings:
+        return {"chatroom": False, "request": False, "lounge": False}
+    
+    return {
+        "chatroom": settings.get("spam_filter_chatroom", False),
+        "request": settings.get("spam_filter_request", False),
+        "lounge": settings.get("spam_filter_lounge", False)
+    }
 # Get spam filter status for a user
+# Automation settings functions
+def set_automation_setting(telegram_user_id: int, automation_type: str, status: bool):
+    """Set automation status for individual features: chatroom, request, lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "settings"},
+        {"$set": {f"automation_{automation_type}": status}},
+        upsert=True
+    )
+    return True
+
+def get_automation_setting(telegram_user_id: int, automation_type: str) -> bool:
+    """Get automation status for individual features: chatroom, request, lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    return settings.get(f"automation_{automation_type}", False) if settings else False
+
+def get_all_automation_settings(telegram_user_id: int) -> dict:
+    """Get all automation settings"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return {"chatroom": False, "request": False, "lounge": False}
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    if not settings:
+        return {"chatroom": False, "request": False, "lounge": False}
+    
+    return {
+        "chatroom": settings.get("automation_chatroom", False),
+        "request": settings.get("automation_request", False),
+        "lounge": settings.get("automation_lounge", False)
+    }
+
+# Automation message settings
+def set_automation_message(telegram_user_id: int, message_type: str, message: str):
+    """Set automation message for chatroom or lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "settings"},
+        {"$set": {f"automation_message_{message_type}": message}},
+        upsert=True
+    )
+    return True
+
+def get_automation_message(telegram_user_id: int, message_type: str) -> str:
+    """Get automation message for chatroom or lounge"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return ""
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    return settings.get(f"automation_message_{message_type}", "") if settings else ""
+
+# Speed settings functions
+def set_speed_setting(telegram_user_id: int, speed_type: str, delay: float):
+    """Set speed delay for different operations"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "settings"},
+        {"$set": {f"speed_{speed_type}": delay}},
+        upsert=True
+    )
+    return True
+
+def get_speed_setting(telegram_user_id: int, speed_type: str) -> float:
+    """Get speed delay for different operations"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        # Default speeds
+        defaults = {"request": 0.5, "lounge": 2.0, "chatroom": 1.0, "skip": 1.0}
+        return defaults.get(speed_type, 1.0)
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    if not settings:
+        defaults = {"request": 0.5, "lounge": 2.0, "chatroom": 1.0, "skip": 1.0}
+        return defaults.get(speed_type, 1.0)
+    
+    defaults = {"request": 0.5, "lounge": 2.0, "chatroom": 1.0, "skip": 1.0}
+    return settings.get(f"speed_{speed_type}", defaults.get(speed_type, 1.0))
+
+def get_all_speed_settings(telegram_user_id: int) -> dict:
+    """Get all speed settings"""
+    return {
+        "request": get_speed_setting(telegram_user_id, "request"),
+        "lounge": get_speed_setting(telegram_user_id, "lounge"),
+        "chatroom": get_speed_setting(telegram_user_id, "chatroom"),
+        "skip": get_speed_setting(telegram_user_id, "skip")
+    }
+
 def get_spam_filter(telegram_user_id: int) -> bool:
     if not _ensure_user_collection_exists(telegram_user_id):
         return False

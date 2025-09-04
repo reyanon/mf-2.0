@@ -4,7 +4,7 @@ import logging
 import html
 from aiogram import Bot, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from db import get_spam_filter, is_already_sent, add_sent_id, get_active_tokens, get_current_account, get_already_sent_ids # Import the new function
+from db import get_individual_spam_filter, is_already_sent, add_sent_id, get_active_tokens, get_current_account, get_already_sent_ids # Import the new function
 from collections import defaultdict
 import time
 from dateutil import parser
@@ -14,7 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 
 # ✅ Speed configuration 
-PER_USER_DELAY = 0.5      # Delay between each user added
+PER_USER_DELAY = 2     # Delay between each user added
 PER_BATCH_DELAY = 2       # Delay between batches
 EMPTY_BATCH_DELAY = 2     # Delay after empty batch
 PER_ERROR_DELAY = 5       # Delay after errors
@@ -138,7 +138,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id, 
 
     # Get already sent IDs if spam filter is enabled
     already_sent_ids = set()
-    if get_spam_filter(user_id):
+    if get_individual_spam_filter(user_id, "request"):
         already_sent_ids = get_already_sent_ids(user_id, "request")
 
     for user in users:
@@ -146,7 +146,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id, 
             break
 
         # Skip if already sent and spam filter is enabled
-        if get_spam_filter(user_id) and user["_id"] in already_sent_ids:
+        if get_individual_spam_filter(user_id, "request") and user["_id"] in already_sent_ids:
             filtered_count += 1
             
             # Update token status if provided
@@ -180,7 +180,7 @@ async def process_users(session, users, token, user_id, bot, target_channel_id, 
                     break
 
                 # Add to sent IDs if spam filter is enabled
-                if get_spam_filter(user_id):
+                if get_individual_spam_filter(user_id, "request"):
                     add_sent_id(user_id, "request", user["_id"])
 
                 # Format and send user details
