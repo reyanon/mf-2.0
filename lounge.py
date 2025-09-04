@@ -4,7 +4,6 @@ import aiohttp
 import logging
 from typing import List, Dict
 from aiogram import types
-from online_status import set_online_status, refresh_user_location
 
 LOUNGE_URL = "https://api.meeff.com/lounge/dashboard/v1"
 CHATROOM_URL = "https://api.meeff.com/chatroom/open/v2"
