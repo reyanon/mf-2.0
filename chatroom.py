@@ -202,16 +202,6 @@ async def send_message_to_everyone_all_tokens(
     Send messages to everyone for multiple tokens concurrently,
     with proper filtered count and optional in-memory deduplication.
     """
-    # Set all accounts online first
-    logging.info("Setting all accounts online for chatroom messaging...")
-    online_tasks = []
-    for token in tokens:
-        online_tasks.append(set_online_status(token, True))
-        online_tasks.append(refresh_user_location(token))
-    
-    await asyncio.gather(*online_tasks, return_exceptions=True)
-    logging.info("All accounts set to online status")
-    
     token_status: Dict[str, Tuple[int, int, int, str]] = {}
     sent_ids = set() if use_in_memory_deduplication else None
     sent_ids_lock = asyncio.Lock() if use_in_memory_deduplication else None

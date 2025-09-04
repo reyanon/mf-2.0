@@ -241,11 +241,6 @@ async def run_requests(user_id, bot, target_channel_id):
         state["running"] = False
         return
     
-    # Set account online and refresh location
-    logging.info("Setting account online and refreshing location...")
-    await set_online_status(token, True)
-    await refresh_user_location(token)
-    
     async with aiohttp.ClientSession() as session:
         while state["running"]:
             try:
@@ -351,17 +346,6 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     state["running"] = True
     state["stopped"] = False
     
-    # Set all accounts online first
-    logging.info("Setting all accounts online...")
-    online_tasks = []
-    for token_obj in tokens:
-        token = token_obj["token"]
-        online_tasks.append(set_online_status(token, True))
-        online_tasks.append(refresh_user_location(token))
-    
-    await asyncio.gather(*online_tasks, return_exceptions=True)
-    logging.info("All accounts set to online status")
-
     # Initialize status message
     if not state.get("status_message_id"):
         status_message = await bot.send_message(
