@@ -38,7 +38,11 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
 async def fetch_users(session, token):
     """Fetch users from the API for friend requests"""
     url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
-    headers = {"meeff-access-token": token, "Connection": "keep-alive"}
+    headers = {
+    'User-Agent': "okhttp/4.12.0",
+    'X-Device-Info': "iPhone15Pro-iOS17.5.1-6.6.2",
+    'meeff-access-token': token
+}
     try:
         async with session.get(url, headers=headers) as response:
             if response.status == 429:
