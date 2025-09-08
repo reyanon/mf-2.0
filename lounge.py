@@ -220,19 +220,23 @@ async def send_lounge_all_tokens(
     spam_enabled: bool
 ) -> None:
     """
-    Process lounge messaging for all tokens, fetching all batches of users.
-    Uses the same pagination logic as send_lounge.
+    Process lounge messaging for all tokens.
+    Uses the original line-by-line alignment and displays account names.
     """
     logger.info(f"Spam filter enabled: {spam_enabled}")
-    token_status: Dict[str, Tuple[int, int, str]] = {}
+    # MODIFIED: Use the robust token-as-key data structure to track all accounts
+    token_status: Dict[str, Dict] = {}
     sent_ids = await is_already_sent(chat_id, "lounge", None, bulk=True) if spam_enabled else set()
     processing_ids = set()
     lock = asyncio.Lock()
 
-    async def _worker(token: str, tid: str, sent_ids: set):
-        sent = filtered = 0
+    async def _worker(token_data: Dict, sent_ids: set):
+        token = token_data["token"]
+        status_entry = token_status[token]
+        
+        sent = 0
+        filtered = 0
         successful_ids = []
-        token_status[tid] = (sent, filtered, "Queued")
         batch_count = 0
 
         async with aiohttp.ClientSession(headers={**HEADERS, 'meeff-access-token': token}) as session:
@@ -242,17 +246,13 @@ async def send_lounge_all_tokens(
                     users = await fetch_lounge_users(token)
                     if not users:
                         if batch_count == 1:
-                            token_status[tid] = (sent, filtered, "No users")
+                            status_entry['status'] = "No users"
                         break
 
-                    logger.info(f"Token {tid} fetched {len(users)} users in batch {batch_count}")
-
-                    # Single-pass filtering for is_spam and deduplication
                     filtered_users = []
                     for u in users:
                         uid = u["user"].get("_id")
-                        if not uid:
-                            continue
+                        if not uid: continue
                         if not spam_enabled and u.get("user", {}).get("is_spam", False):
                             filtered += 1
                             continue
@@ -260,69 +260,65 @@ async def send_lounge_all_tokens(
                             if uid not in sent_ids and uid not in processing_ids:
                                 filtered_users.append(u)
                                 processing_ids.add(uid)
-
+                    
+                    status_entry['filtered'] = filtered
                     total = len(filtered_users)
                     for idx, u in enumerate(filtered_users, start=1):
                         uid = u["user"]["_id"]
+                        room = None
                         try:
-                            async with session.post(
-                                CHATROOM_URL,
-                                json={"waitingRoomId": uid, "locale": "en"},
-                                timeout=10
-                            ) as r:
+                            async with session.post(CHATROOM_URL, json={"waitingRoomId": uid, "locale": "en"}, timeout=10) as r:
                                 room = (await r.json()).get("chatRoom", {}).get("_id") if r.status == 200 else None
-                        except Exception:
-                            room = None
+                        except Exception: pass
 
                         if room:
                             try:
-                                async with session.post(
-                                    SEND_MESSAGE_URL,
-                                    json={"chatRoomId": room, "message": message, "locale": "en"},
-                                    timeout=10
-                                ) as r2:
+                                async with session.post(SEND_MESSAGE_URL, json={"chatRoomId": room, "message": message, "locale": "en"}, timeout=10) as r2:
                                     if r2.status == 200:
                                         sent += 1
                                         successful_ids.append(uid)
-                                        logger.info(f"Token {tid} sent message to {uid}")
-                            except Exception:
-                                pass
-
+                            except Exception: pass
+                        
                         async with lock:
                             processing_ids.discard(uid)
-                        token_status[tid] = (sent, filtered, f"Batch {batch_count}, {idx}/{total}")
 
-                    await asyncio.sleep(2)  # Match send_lounge delay
+                        status_entry['sent'] = sent
+                        status_entry['status'] = f"Batch {batch_count}, {idx}/{total}"
+
+                    await asyncio.sleep(2)
 
                 except Exception as e:
-                    logger.error(f"Token {tid} error in batch {batch_count}: {e}")
+                    logger.error(f"Token {status_entry['name']} error in batch {batch_count}: {e}")
                     break
 
-            # Save successful IDs
             if spam_enabled and successful_ids:
                 await bulk_add_sent_ids(chat_id, "lounge", successful_ids)
-                logger.info(f"Token {tid} saved {len(successful_ids)} IDs to database")
-
-            token_status[tid] = (sent, filtered, "Done")
+            
+            if status_entry['status'] not in ["No users"]:
+                 status_entry['status'] = "Done"
 
     async def _refresh():
         last_message = ""
-        while any(st not in ("Done", "No users", "Fetch error") for _, (_, _, st) in token_status.items()):
+        while any(d['status'] not in ("Done", "No users", "Fetch error") for d in token_status.values()):
+            # MODIFIED: Use the original line-by-line <pre> method as requested
             lines = [
                 "🧾 <b>Lounge Status</b>\n",
-                "<pre>ID  | Sent | Filtered | State</pre>",
+                "<pre>Account │Sent  │Filtered│Status</pre>",
             ]
-            for tid, (s, f, st) in token_status.items():
-                lines.append(f"<pre>{tid:<2} | {s:<4} | {f:<8} | {st}</pre>")
+            for status_dict in token_status.values():
+                name = status_dict['name']
+                s = status_dict['sent']
+                f = status_dict['filtered']
+                st = status_dict['status']
+                lines.append(f"<pre>{name:<10} │{s:<5} │{f:<8} │{st}</pre>")
             
             current_message = "\n".join(lines)
+
             if current_message != last_message:
                 try:
                     await bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=status_message.message_id,
-                        text=current_message,
-                        parse_mode="HTML"
+                        chat_id=chat_id, message_id=status_message.message_id,
+                        text=current_message, parse_mode="HTML"
                     )
                     last_message = current_message
                 except Exception as e:
@@ -330,30 +326,36 @@ async def send_lounge_all_tokens(
                         logger.error(f"Error updating status: {e}")
             await asyncio.sleep(1)
 
-    # Spawn workers
-    tasks = []
+    # Initialize the data structure to track all accounts
     for idx, td in enumerate(tokens_data, start=1):
-        tid = str(td.get("id", idx))
-        tasks.append(asyncio.create_task(_worker(td["token"], tid, sent_ids)))
+        token = td['token']
+        name = td.get("name", f"Account {idx}")
+        token_status[token] = {'name': name, 'sent': 0, 'filtered': 0, 'status': 'Queued'}
+
+    # Spawn workers
+    tasks = [asyncio.create_task(_worker(td, sent_ids)) for td in tokens_data]
 
     ui_task = asyncio.create_task(_refresh())
     await asyncio.gather(*tasks)
     await ui_task
 
-    # Final summary
+    # Final summary using the original alignment method
     lines = [
         "✅ <b>AIO Lounge completed</b>\n",
-        "<pre>ID | Sent | Filtered | State</pre>",
+        "<pre>Account │Sent  │Filtered│Status</pre>",
     ]
-    for tid, (s, f, _) in token_status.items():
-        lines.append(f"<pre>{tid:<2} | {s:<4} | {f:<8} | Done</pre>")
+    for status_dict in token_status.values():
+        name = status_dict['name']
+        s = status_dict['sent']
+        f = status_dict['filtered']
+        lines.append(f"<pre>{name:<10} │{s:<5} │{f:<8} │Done</pre>")
+
+    final_message = "\n".join(lines)
 
     try:
         await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=status_message.message_id,
-            text="\n".join(lines),
-            parse_mode="HTML"
+            chat_id=chat_id, message_id=status_message.message_id,
+            text=final_message, parse_mode="HTML"
         )
     except Exception as e:
         if "message is not modified" not in str(e):
