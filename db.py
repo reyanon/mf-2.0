@@ -1,3 +1,4 @@
+
 from pymongo import MongoClient
 import datetime
 
@@ -51,12 +52,28 @@ def list_all_collections():
     return sorted(user_collections, key=lambda x: x.get("summary", {}).get("created_at") or datetime.datetime.min, reverse=True)
 
 def get_collection_summary(collection_name):
-    """Get detailed summary of data in a collection"""
+    """Get a detailed summary of data in a collection using a single efficient query."""
     try:
         collection = db[collection_name]
         
+        # --- THE FIX IS HERE ---
+        # Instead of 5 separate database calls, we fetch all documents in one trip.
+        query_types = ["tokens", "sent_records", "info_cards", "settings", "metadata"]
+        all_docs = list(collection.find({"type": {"$in": query_types}}))
+        
+        # Create a dictionary to easily access documents by their type
+        docs_by_type = {doc.get("type"): doc for doc in all_docs}
+
+        # Now, get each document from our pre-fetched dictionary (no new DB calls)
+        tokens_doc = docs_by_type.get("tokens", {})
+        sent_doc = docs_by_type.get("sent_records", {})
+        info_doc = docs_by_type.get("info_cards", {})
+        settings_doc = docs_by_type.get("settings", {})
+        metadata_doc = docs_by_type.get("metadata", {})
+        
+        # --- The rest of the logic remains the same, but it's now much faster ---
+
         # Get tokens count and details
-        tokens_doc = collection.find_one({"type": "tokens"})
         tokens_count = 0
         active_tokens = 0
         if tokens_doc and "items" in tokens_doc:
@@ -64,7 +81,6 @@ def get_collection_summary(collection_name):
             active_tokens = sum(1 for token in tokens_doc["items"] if token.get("active", True))
         
         # Get sent records count by category
-        sent_doc = collection.find_one({"type": "sent_records"})
         sent_records = {"total": 0, "categories": {}}
         if sent_doc and "data" in sent_doc:
             for category, ids in sent_doc["data"].items():
@@ -73,16 +89,13 @@ def get_collection_summary(collection_name):
                 sent_records["total"] += count
         
         # Get info cards count
-        info_doc = collection.find_one({"type": "info_cards"})
         info_cards_count = len(info_doc.get("data", {})) if info_doc else 0
         
         # Get settings
-        settings_doc = collection.find_one({"type": "settings"})
         current_token = settings_doc.get("current_token") if settings_doc else None
         spam_filter = settings_doc.get("spam_filter", False) if settings_doc else False
         
         # Get creation date
-        metadata_doc = collection.find_one({"type": "metadata"})
         created_at = metadata_doc.get("created_at") if metadata_doc else None
         
         return {
@@ -668,6 +681,77 @@ def get_message_delay(telegram_user_id):
     # Return the delay in seconds for this user
     # You could store this in your database
     return 2  # Default 2 second delay
+
+# Email variations management
+def add_used_email_variation(telegram_user_id, base_email, variation):
+    """Store used email variation to avoid duplicates"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "email_variations"},
+        {"$addToSet": {f"data.{base_email}": variation}},
+        upsert=True
+    )
+    return True
+
+def get_used_email_variations(telegram_user_id, base_email):
+    """Get all used email variations for a base email"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return []
+    
+    user_db = _get_user_collection(telegram_user_id)
+    variations_doc = user_db.find_one({"type": "email_variations"})
+    if variations_doc and "data" in variations_doc and base_email in variations_doc["data"]:
+        return variations_doc["data"][base_email]
+    return []
+
+# Auto signup settings
+def set_auto_signup_enabled(telegram_user_id, enabled):
+    """Enable or disable auto signup mode"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "settings"},
+        {"$set": {"auto_signup_enabled": enabled}},
+        upsert=True
+    )
+    return True
+
+def get_auto_signup_enabled(telegram_user_id):
+    """Check if auto signup is enabled"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    settings = user_db.find_one({"type": "settings"})
+    return settings.get("auto_signup_enabled", False) if settings else False
+
+# Signup configuration storage
+def set_signup_config(telegram_user_id, config):
+    """Store signup configuration"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return False
+    
+    user_db = _get_user_collection(telegram_user_id)
+    user_db.update_one(
+        {"type": "signup_config"},
+        {"$set": {"data": config}},
+        upsert=True
+    )
+    return True
+
+def get_signup_config(telegram_user_id):
+    """Get signup configuration"""
+    if not _ensure_user_collection_exists(telegram_user_id):
+        return None
+    
+    user_db = _get_user_collection(telegram_user_id)
+    config_doc = user_db.find_one({"type": "signup_config"})
+    return config_doc.get("data") if config_doc else None
 
 def transfer_user_data(from_telegram_id, to_telegram_id):
     """Transfer all user data from one telegram user to another"""
