@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from dateutil import parser
-
 from db import (
     set_token,
     set_info_card,
