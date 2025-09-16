@@ -141,7 +141,7 @@ async def apply_filter_for_account(token, user_id):
         
         # Default filter data
         filter_data = {
-            "filterGenderType": user_filters.get("filterGenderType", 7),
+            "filterGenderType": user_filters.get("filterGenderType", 5),
             "filterBirthYearFrom": user_filters.get("filterBirthYearFrom", 1979),
             "filterBirthYearTo": 2006,
             "filterDistance": 510,
