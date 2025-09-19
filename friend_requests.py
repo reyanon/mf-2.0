@@ -21,7 +21,7 @@ EMPTY_BATCH_DELAY = 3     # Increased delay for empty batches
 PER_ERROR_DELAY = 2       # Reduced error delay
 MAX_RETRIES = 3           # Maximum retries per request
 BATCH_SIZE = 20           # Process users in smaller batches
-MAX_CONCURRENT_TOKENS = 5 # Limit concurrent token processing
+MAX_CONCURRENT_TOKENS = 10 # Limit concurrent token processing
 TIMEOUT_SECONDS = 10      # Request timeout
 CIRCUIT_BREAKER_THRESHOLD = 5  # Failures before circuit breaker opens
 
