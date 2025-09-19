@@ -33,7 +33,7 @@ user_states = defaultdict(lambda: {
     "total_added_friends": 0,
     "batch_index": 0,
     "stopped": False,
-    "last_update": None,
+    "last_update": datetime.now(),
     "error_count": 0,
     "circuit_breaker_open": False,
     "circuit_breaker_reset_time": None
@@ -324,7 +324,7 @@ async def update_status_safe(bot, user_id, message_id, text, markup=None):
     now = datetime.now()
     
     # Rate limit status updates (max once per second)
-    if state["last_update"] and (now - state["last_update"]).total_seconds() < 1:
+    if state.get("last_update") and (now - state["last_update"]).total_seconds() < 1:
         return
     
     try:
@@ -385,7 +385,7 @@ async def run_requests_improved(user_id, bot, target_channel_id):
                 # Update status
                 await update_status_safe(
                     bot, user_id, state["status_message_id"],
-                    f"{token_name}: Requests sent: {state['total_added_friends']} | Errors: {state['error_count']}",
+                    f"{token_name}: Requests sent: {state['total_added_friends']}",
                     stop_markup
                 )
                 
@@ -457,7 +457,7 @@ async def run_requests_improved(user_id, bot, target_channel_id):
     status = "Stopped" if state.get("stopped") else "Completed"
     await bot.send_message(
         user_id, 
-        f"✅ {status}! Total Added: {state.get('total_added_friends', 0)} | Errors: {state.get('error_count', 0)}"
+        f"✅ {status}! Total Added: {state.get('total_added_friends', 0)}"
     )
 
 async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
@@ -496,8 +496,7 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
             "name": token_obj.get("name", f"Account {i+1}"),
             "added": 0,
             "filtered": 0,
-            "status": "Queued",
-            "errors": 0
+            "status": "Queued"
         } for i, token_obj in enumerate(tokens)
     }
     
@@ -552,7 +551,8 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
                             return
                         
                         # Stop if too many errors for this token
-                        if token_status[token]["errors"] > 10:
+                        error_count = token_status[token].get("errors", 0)
+                        if error_count > 10:
                             token_status[token]["status"] = "Too many errors"
                             return
                             
@@ -560,7 +560,6 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
 
                     except Exception as e:
                         logging.error(f"Error processing {name}: {e}")
-                        token_status[token]["errors"] += 1
                         token_status[token]["status"] = "Retrying..."
                         await asyncio.sleep(PER_ERROR_DELAY)
             
@@ -575,16 +574,15 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
             try:
                 update_count += 1
                 total_added_now = sum(status["added"] for status in token_status.values())
-                total_errors = sum(status["errors"] for status in token_status.values())
                 
-                header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now} | <b>Errors:</b> {total_errors}"
+                header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}"
                 
-                lines = [header, "", "<pre>Account    │Added │Filter│Errors│Status    </pre>"]
+                lines = [header, "", "<pre>Account    │Added │Filter│Status      </pre>"]
                 for status in token_status.values():
                     name = status["name"]
                     display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
                     lines.append(
-                        f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['errors']:>6}│{status['status']:<9}</pre>"
+                        f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']:<11}</pre>"
                     )
 
                 current_message = "\n".join(lines)
@@ -623,17 +621,16 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
 
     # Final status
     total_added = sum(status["added"] for status in token_status.values())
-    total_errors = sum(status["errors"] for status in token_status.values())
     completion_status = "⚠️ Process Stopped" if state.get("stopped") else "✅ AIO Requests Completed"
     
-    final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added} | <b>Errors:</b> {total_errors}"
+    final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
     
-    final_lines = [final_header, "", "<pre>Account    │Added │Filter│Errors│Status    </pre>"]
+    final_lines = [final_header, "", "<pre>Account    │Added │Filter│Status      </pre>"]
     for status in token_status.values():
         name = status["name"]
         display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
         final_lines.append(
-            f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['errors']:>6}│{status['status']}</pre>"
+            f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']}</pre>"
         )
 
     await update_status_safe(
