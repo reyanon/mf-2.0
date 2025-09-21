@@ -656,3 +656,7 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
         final_lines.append(f"<pre>{display} │{status['added']:>5} │{status['status']}</pre>")
 
     await update_status_safe(bot, user_id, state["status_message_id"], "\n".join(final_lines))
+
+# Expose the improved functions for use in main.py
+run_requests = run_requests_improved
+process_all_tokens = process_all_tokens_improved
