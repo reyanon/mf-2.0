@@ -596,26 +596,33 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
                     
         token_status[token]["status"] = "Done"
 
-    # 3. ==================== UI REFRESHER ====================
+# 3. ==================== UI REFRESHER ====================
     async def _refresh_ui_improved():
         last_message = ""
         while state["running"]:
             try:
                 total_added_now = sum(status["added"] for status in token_status.values())
                 
-                # Create a summary of queue sizes
                 q_summary_parts = []
                 for nat, q in queues_by_nationality.items():
                     if q.qsize() > 0:
                         q_summary_parts.append(f"{nat.upper()}:{q.qsize()}")
                 q_summary = " | ".join(q_summary_parts)
                 
-                header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}\n<pre>Queues: {q_summary}</pre>"
-                lines = [header, "", "<pre>Account    │Added │Status      </pre>"]
+                header = f"🔄 <b>AIO Requests</b> | <b>Total Added:</b> {total_added_now}\n<pre>Queues: {q_summary}</pre>"
+                
+                # --- THIS IS THE PART THAT WAS CHANGED ---
+                # New header for the new format
+                lines = [header, ""] 
+                
                 for status in token_status.values():
                     name = status["name"]
-                    display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-                    lines.append(f"<pre>{display} │{status['added']:>5} │{status['status']:<11}</pre>")
+                    # Format the name to a fixed 10-character length
+                    display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
+                    
+                    # New line format with fixed spacing
+                    lines.append(f"<pre>{display_name}| sent : {status['added']:<4} | {status['status']}</pre>")
+                # -----------------------------------------
 
                 current_message = "\n".join(lines)
                 if current_message != last_message:
@@ -645,18 +652,20 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
         try: await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
         except: pass
 
-    # Final Report
+# Final Report
     total_added = sum(status["added"] for status in token_status.values())
     completion_status = "⚠️ Process Stopped" if state.get("stopped") else "✅ AIO Requests Completed"
     final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
-    final_lines = [final_header, "", "<pre>Account    │Added │Status      </pre>"]
+    
+    # --- UPDATE THIS PART AS WELL ---
+    final_lines = [final_header, ""]
     for status in token_status.values():
         name = status["name"]
-        display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-        final_lines.append(f"<pre>{display} │{status['added']:>5} │{status['status']}</pre>")
+        display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
+        final_lines.append(f"<pre>{display_name}| sent : {status['added']:<4} | {status['status']}</pre>")
+    # --------------------------------
 
     await update_status_safe(bot, user_id, state["status_message_id"], "\n".join(final_lines))
-
 # Expose the improved functions for use in main.py
 run_requests = run_requests_improved
 process_all_tokens = process_all_tokens_improved
