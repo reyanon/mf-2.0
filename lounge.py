@@ -38,12 +38,16 @@ async def fetch_lounge_users(session: aiohttp.ClientSession, token: str, user_id
 async def open_chatroom_and_send(
     session: aiohttp.ClientSession, token: str, target_meeff_id: str, message: str, telegram_user_id: int
 ) -> bool:
-    """Atomically opens a chatroom and sends a message using consistent device info."""
+    """
+    Atomically opens a chatroom and sends one or more comma-separated messages
+    using consistent device info.
+    """
     device_info = await get_or_create_device_info_for_token(telegram_user_id, token)
     headers = get_headers_with_device_info(BASE_HEADERS, device_info)
     headers['meeff-access-token'] = token
     
     # 1. Open Chatroom
+    chatroom_id = None
     try:
         payload = {"waitingRoomId": target_meeff_id, "locale": "en"}
         async with session.post(CHATROOM_URL, json=payload, headers=headers, timeout=10) as response:
@@ -62,19 +66,34 @@ async def open_chatroom_and_send(
     if not chatroom_id:
         return False
         
-    # 2. Send Message
-    try:
-        payload = {"chatRoomId": chatroom_id, "message": message, "locale": "en"}
-        async with session.post(SEND_MESSAGE_URL, json=payload, headers=headers, timeout=10) as response:
-            if response.status == 200:
-                logger.info(f"Sent message to {target_meeff_id}")
-                return True
-            logger.warning(f"Failed to send message to {target_meeff_id} (Status: {response.status})")
-            return False
-    except Exception as e:
-        logger.error(f"Error sending message to {target_meeff_id}: {e}")
+    # 2. Split message and send each part
+    # NEW: Split the message by comma. .strip() removes whitespace and the if condition filters out empty parts.
+    messages_to_send = [msg.strip() for msg in message.split(',') if msg.strip()]
+    
+    if not messages_to_send:
+        logger.warning(f"Message for {target_meeff_id} was empty after splitting.")
         return False
 
+    any_message_sent = False
+    # NEW: Loop through each message part and send it.
+    for i, msg_part in enumerate(messages_to_send):
+        try:
+            payload = {"chatRoomId": chatroom_id, "message": msg_part, "locale": "en"}
+            async with session.post(SEND_MESSAGE_URL, json=payload, headers=headers, timeout=10) as response:
+                if response.status == 200:
+                    logger.info(f"Sent message part {i+1}/{len(messages_to_send)} to {target_meeff_id}")
+                    any_message_sent = True # Mark success if at least one part is sent
+                else:
+                    logger.warning(f"Failed to send message part {i+1} to {target_meeff_id} (Status: {response.status})")
+            
+            # NEW: Add a small delay between sending messages to the same user
+            if i < len(messages_to_send) - 1:
+                await asyncio.sleep(0.5)
+
+        except Exception as e:
+            logger.error(f"Error sending message part {i+1} to {target_meeff_id}: {e}")
+    
+    return any_message_sent
 async def process_lounge_batch(
     session: aiohttp.ClientSession, token: str, users: List[Dict], message: str,
     sent_ids: Set[str], processing_ids: Set[str], lock: asyncio.Lock, user_id: int
