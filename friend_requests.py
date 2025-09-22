@@ -254,7 +254,12 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     state = user_states[user_id]
     state.update({"total_added_friends": 0, "running": True, "stopped": False})
 
-    status_message = await bot.send_message(chat_id=user_id, text="🔄 <b>AIO Starting...</b>", parse_mode="HTML", reply_markup=stop_markup)
+    status_message = await bot.send_message(
+        chat_id=user_id,
+        text="🔄 <b>AIO Starting...</b>",
+        parse_mode="HTML",
+        reply_markup=stop_markup
+    )
     state["status_message_id"] = status_message.message_id
     try:
         await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id, disable_notification=True)
@@ -270,15 +275,32 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
             "status": "Queued"
         } for i, token_obj in enumerate(tokens)
     }
-    
+
     session_sent_ids = await get_already_sent_ids(user_id, "request")
     lock = asyncio.Lock()
+
+    # --- Column widths ---
+    NAME_WIDTH   = 9
+    ADDED_WIDTH  = 5
+    FILTER_WIDTH = 6
+    STATUS_WIDTH = 12
+
+    def format_name(name: str) -> str:
+        return (name[:NAME_WIDTH - 1] + "…") if len(name) > NAME_WIDTH else name.ljust(NAME_WIDTH)
+
+    def format_row(name, added, filtered, status):
+        return (
+            f"<pre>{format_name(name)} │"
+            f"{str(added).rjust(ADDED_WIDTH)} │"
+            f"{str(filtered).rjust(FILTER_WIDTH)} │"
+            f"{status.ljust(STATUS_WIDTH)}</pre>"
+        )
 
     async def _worker(token_obj):
         token = token_obj["token"]
         name = token_status[token]["name"]
         empty_batches = 0
-        
+
         async with aiohttp.ClientSession() as session:
             while state["running"]:
                 try:
@@ -287,11 +309,11 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                         await asyncio.sleep(1)
 
                     users = await fetch_users(session, token, user_id)
-                    
+
                     if users is None:
                         token_status[token]["status"] = "Invalid (401)"
                         return
-                    
+
                     if not users or len(users) < 5:
                         empty_batches += 1
                         token_status[token]["status"] = f"Waiting ({empty_batches}/10)"
@@ -300,26 +322,28 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
                             token_status[token]["status"] = "No users"
                             return
                         continue
-                    
+
                     empty_batches = 0
                     token_status[token]["status"] = "Processing"
-                    
-                    limit_reached, batch_added, batch_filtered = await process_users(session, users, token, user_id, bot, name, session_sent_ids, lock)
-                    
+
+                    limit_reached, batch_added, batch_filtered = await process_users(
+                        session, users, token, user_id, bot, name, session_sent_ids, lock
+                    )
+
                     token_status[token]["added"] += batch_added
                     token_status[token]["filtered"] += batch_filtered
-                    
+
                     if limit_reached:
                         token_status[token]["status"] = "Limit Full"
                         return
-                        
+
                     await asyncio.sleep(PER_BATCH_DELAY)
 
                 except Exception as e:
                     logging.error(f"Error processing {name}: {e}")
                     token_status[token]["status"] = "Retrying..."
                     await asyncio.sleep(PER_ERROR_DELAY)
-        
+
         token_status[token]["status"] = "Stopped"
 
     async def _refresh_ui():
@@ -327,19 +351,24 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
         while state["running"]:
             total_added_now = sum(status["added"] for status in token_status.values())
             header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}"
-            
-            lines = [header, "", "<pre>Account   │Added │Filter│Status      </pre>"]
+
+            lines = [
+                header,
+                "",
+                f"<pre>{'Account'.ljust(NAME_WIDTH)} │{'Added'.rjust(ADDED_WIDTH)} │{'Filter'.rjust(FILTER_WIDTH)} │{'Status'.ljust(STATUS_WIDTH)}</pre>"
+            ]
             for status in token_status.values():
-                name = status["name"]
-                display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-                lines.append(f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']:<10}</pre>")
+                lines.append(format_row(status["name"], status["added"], status["filtered"], status["status"]))
 
             current_message = "\n".join(lines)
             if current_message != last_message:
                 try:
                     await bot.edit_message_text(
-                        chat_id=user_id, message_id=state["status_message_id"],
-                        text=current_message, parse_mode="HTML", reply_markup=stop_markup
+                        chat_id=user_id,
+                        message_id=state["status_message_id"],
+                        text=current_message,
+                        parse_mode="HTML",
+                        reply_markup=stop_markup
                     )
                     last_message = current_message
                 except Exception as e:
@@ -357,21 +386,27 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id):
     await asyncio.sleep(1.1)
     ui_task.cancel()
     if state.get("pinned_message_id"):
-        try: await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
-        except Exception: pass
+        try:
+            await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
+        except Exception:
+            pass
 
     # Final Status UI
     total_added = sum(status["added"] for status in token_status.values())
     completion_status = "⚠️ Process Stopped" if state.get("stopped") else "✅ AIO Requests Completed"
     final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
-    
-    final_lines = [final_header, "", "<pre>Account   │Added │Filter│Status      </pre>"]
+
+    final_lines = [
+        final_header,
+        "",
+        f"<pre>{'Account'.ljust(NAME_WIDTH)} │{'Added'.rjust(ADDED_WIDTH)} │{'Filter'.rjust(FILTER_WIDTH)} │{'Status'.ljust(STATUS_WIDTH)}</pre>"
+    ]
     for status in token_status.values():
-        name = status["name"]
-        display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-        final_lines.append(f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']}</pre>")
+        final_lines.append(format_row(status["name"], status["added"], status["filtered"], status["status"]))
 
     await bot.edit_message_text(
-        chat_id=user_id, message_id=state["status_message_id"],
-        text="\n".join(final_lines), parse_mode="HTML"
+        chat_id=user_id,
+        message_id=state["status_message_id"],
+        text="\n".join(final_lines),
+        parse_mode="HTML"
     )
