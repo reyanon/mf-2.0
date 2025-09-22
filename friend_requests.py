@@ -14,18 +14,15 @@ from device_info import get_or_create_device_info_for_token, get_headers_with_de
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Improved speed configuration with circuit breaker
-PER_USER_DELAY = 0.3      # Reduced delay for better performance
-PER_BATCH_DELAY = 0.8     # Reduced batch delay
-EMPTY_BATCH_DELAY = 3     # Increased delay for empty batches
-PER_ERROR_DELAY = 2       # Reduced error delay
-MAX_RETRIES = 3           # Maximum retries per request
-BATCH_SIZE = 20           # Process users in smaller batches
-MAX_CONCURRENT_TOKENS = 10 # Limit concurrent token processing
-TIMEOUT_SECONDS = 10      # Request timeout
-CIRCUIT_BREAKER_THRESHOLD = 5  # Failures before circuit breaker opens
 
-# Global state with better structure
+# ✅ Speed configuration
+PER_USER_DELAY = 0.5      # Delay can be fast again because we send photos directly
+PER_BATCH_DELAY = 1       # Delay between fetching new batches of users
+EMPTY_BATCH_DELAY = 2     # Delay after receiving an empty batch
+PER_ERROR_DELAY = 5       # Delay after a network or API error
+
+
+# Global state variables for friend requests
 user_states = defaultdict(lambda: {
     "running": False,
     "status_message_id": None,
@@ -33,110 +30,44 @@ user_states = defaultdict(lambda: {
     "total_added_friends": 0,
     "batch_index": 0,
     "stopped": False,
-    "last_update": datetime.now(),
-    "error_count": 0,
-    "circuit_breaker_open": False,
-    "circuit_breaker_reset_time": None
 })
 
-# Rate limiting and circuit breaker
-class CircuitBreaker:
-    def __init__(self, failure_threshold=CIRCUIT_BREAKER_THRESHOLD, recovery_timeout=60):
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.failure_count = 0
-        self.last_failure_time = None
-        self.state = 'CLOSED'  # CLOSED, OPEN, HALF_OPEN
-
-    def call(self, func):
-        async def wrapper(*args, **kwargs):
-            if self.state == 'OPEN':
-                if self.last_failure_time and (datetime.now() - self.last_failure_time).seconds > self.recovery_timeout:
-                    self.state = 'HALF_OPEN'
-                else:
-                    raise Exception("Circuit breaker is OPEN")
-
-            try:
-                result = await func(*args, **kwargs)
-                if self.state == 'HALF_OPEN':
-                    self.reset()
-                return result
-            except Exception as e:
-                self.record_failure()
-                raise e
-
-        return wrapper
-
-    def record_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = datetime.now()
-        if self.failure_count >= self.failure_threshold:
-            self.state = 'OPEN'
-
-    def reset(self):
-        self.failure_count = 0
-        self.state = 'CLOSED'
-        self.last_failure_time = None
-
-# Circuit breakers per user
-circuit_breakers = defaultdict(lambda: CircuitBreaker())
-
-# Inline keyboards
+# Inline keyboards for friend request operations
 stop_markup = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Stop Requests", callback_data="stop")]
 ])
 
-async def fetch_users_with_retry(session, token, user_id, max_retries=MAX_RETRIES):
-    """Fetch users with retry logic and timeout."""
+async def fetch_users(session, token, user_id):
+    """Fetch users from the API for friend requests."""
     url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
     
     device_info = await get_or_create_device_info_for_token(user_id, token)
+    
     base_headers = {
         'User-Agent': "okhttp/4.12.0",
         'meeff-access-token': token
     }
     headers = get_headers_with_device_info(base_headers, device_info)
     
-    for attempt in range(max_retries):
-        try:
-            timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-            async with session.get(url, headers=headers, timeout=timeout) as response:
-                if response.status == 401:
-                    logging.error(f"Token invalid: {token[:10]}...")
-                    return None
-                if response.status == 429:
-                    wait_time = 2 ** attempt  # Exponential backoff
-                    logging.warning(f"Rate limited, waiting {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                    continue
-                if response.status != 200:
-                    logging.error(f"HTTP {response.status}, attempt {attempt + 1}")
-                    if attempt == max_retries - 1:
-                        return []
-                    await asyncio.sleep(1)
-                    continue
-                
-                data = await response.json()
-                return data.get("users", [])
-                
-        except asyncio.TimeoutError:
-            logging.warning(f"Timeout on attempt {attempt + 1}")
-            if attempt == max_retries - 1:
+    try:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 401:
+                logging.error(f"Failed to fetch users: 401 Unauthorized (Token: {token[:10]}... is likely invalid)")
+                return None
+            if response.status == 429:
+                logging.error("Request limit exceeded while fetching users.")
+                return None
+            if response.status != 200:
+                logging.error(f"Failed to fetch users: {response.status}")
                 return []
-            await asyncio.sleep(1)
-        except Exception as e:
-            logging.error(f"Fetch error attempt {attempt + 1}: {e}")
-            if attempt == max_retries - 1:
-                return []
-            await asyncio.sleep(1)
-    
-    return []
+            return (await response.json()).get("users", [])
+    except Exception as e:
+        logging.error(f"Fetch users failed: {e}")
+        return []
 
-def format_user_optimized(user):
-    """Optimized user formatting with better error handling."""
+def format_user(user):
     def time_ago(dt_str):
-        if not dt_str: 
-            return "N/A"
+        if not dt_str: return "N/A"
         try:
             dt = parser.isoparse(dt_str)
             now = datetime.now(timezone.utc)
@@ -148,81 +79,32 @@ def format_user_optimized(user):
             if hours < 24: return f"{hours} hr ago"
             days = hours // 24
             return f"{days} day(s) ago"
-        except Exception: 
-            return "unknown"
+        except Exception: return "unknown"
 
-    # Safe data extraction with defaults
-    name = html.escape(str(user.get('name', 'N/A'))[:50])  # Limit length
-    user_id = html.escape(str(user.get('_id', 'N/A')))
-    nationality = html.escape(str(user.get('nationalityCode', 'N/A')))
-    height = str(user.get('height', 'N/A'))
-    
-    if "|" in height:
-        try:
-            height_val, height_unit = height.split("|", 1)
-            height = f"{height_val.strip()} {height_unit.strip()}"
-        except:
-            height = "N/A"
-    height = html.escape(height)
-    
-    description = html.escape(str(user.get('description', 'N/A'))[:100])  # Limit length
-    birth_year = html.escape(str(user.get('birthYear', 'N/A')))
-    platform = html.escape(str(user.get('platform', 'N/A')))
-    profile_score = html.escape(str(user.get('profileScore', 'N/A')))
-    distance = html.escape(str(user.get('distance', 'N/A')))
-    language_codes = html.escape(', '.join(user.get('languageCodes', [])[:3]))  # Limit languages
     last_active = time_ago(user.get("recentAt"))
+    nationality = html.escape(user.get('nationalityCode', 'N/A'))
+    height = html.escape(str(user.get('height', 'N/A')))
+    if "|" in height:
+        height_val, height_unit = height.split("|", 1)
+        height = f"{height_val.strip()} {height_unit.strip()}"
         
+    # We remove the "Photos: ..." line because the photo will be sent directly
     return (
-        f"<b>Name:</b> {name}\n"
-        f"<b>ID:</b> <code>{user_id}</code>\n"
+        f"<b>Name:</b> {html.escape(user.get('name', 'N/A'))}\n"
+        f"<b>ID:</b> <code>{html.escape(user.get('_id', 'N/A'))}</code>\n"
         f"<b>Nationality:</b> {nationality}\n"
         f"<b>Height:</b> {height}\n"
-        f"<b>Description:</b> {description}\n"
-        f"<b>Birth Year:</b> {birth_year}\n"
-        f"<b>Platform:</b> {platform}\n"
-        f"<b>Profile Score:</b> {profile_score}\n"
-        f"<b>Distance:</b> {distance} km\n"
-        f"<b>Language Codes:</b> {language_codes}\n"
+        f"<b>Description:</b> {html.escape(user.get('description', 'N/A'))}\n"
+        f"<b>Birth Year:</b> {html.escape(str(user.get('birthYear', 'N/A')))}\n"
+        f"<b>Platform:</b> {html.escape(user.get('platform', 'N/A'))}\n"
+        f"<b>Profile Score:</b> {html.escape(str(user.get('profileScore', 'N/A')))}\n"
+        f"<b>Distance:</b> {html.escape(str(user.get('distance', 'N/A')))} km\n"
+        f"<b>Language Codes:</b> {html.escape(', '.join(user.get('languageCodes', [])))}\n"
         f"<b>Last Active:</b> {last_active}"
     )
 
-async def send_user_info_safe(bot, user_id, user_data, details):
-    """Safely send user info with fallback options."""
-    try:
-        first_photo_url = user_data.get('photoUrls', [None])[0]
-        
-        if first_photo_url:
-            # Try sending photo with timeout
-            await asyncio.wait_for(
-                bot.send_photo(
-                    chat_id=user_id,
-                    photo=first_photo_url,
-                    caption=details,
-                    parse_mode="HTML"
-                ),
-                timeout=5.0
-            )
-        else:
-            await asyncio.wait_for(
-                bot.send_message(
-                    chat_id=user_id,
-                    text=details,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True
-                ),
-                timeout=5.0
-            )
-        return True
-    except asyncio.TimeoutError:
-        logging.warning("Message send timeout")
-        return False
-    except Exception as e:
-        logging.error(f"Failed to send user info: {e}")
-        return False
-
-async def process_users_batch(session, users, token, user_id, bot, token_name, already_sent_ids, lock):
-    """Process users in batches with improved error handling."""
+async def process_users(session, users, token, user_id, bot, token_name, already_sent_ids, lock):
+    """Process a batch of users, sending friend requests and handling spam filters atomically."""
     state = user_states[user_id]
     added_count = 0
     filtered_count = 0
@@ -230,444 +112,266 @@ async def process_users_batch(session, users, token, user_id, bot, token_name, a
     
     is_spam_filter_enabled = await get_individual_spam_filter(user_id, "request")
     ids_to_persist = []
+
     device_info = await get_or_create_device_info_for_token(user_id, token)
-    
-    # Process in smaller batches to prevent hanging
-    for i in range(0, len(users), BATCH_SIZE):
-        if not state["running"]:
-            break
-            
-        batch = users[i:i + BATCH_SIZE]
-        semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+
+    for user in users:
+        if not state["running"]: break
+
+        user_id_to_check = user["_id"]
+
+        if is_spam_filter_enabled:
+            async with lock:
+                if user_id_to_check in already_sent_ids:
+                    filtered_count += 1
+                    continue
+                already_sent_ids.add(user_id_to_check)
         
-        async def process_single_user(user):
-            nonlocal added_count, filtered_count, limit_reached
-            
-            if not state["running"] or limit_reached:
-                return
-                
-            async with semaphore:
-                user_id_to_check = user["_id"]
-                
-                # Spam filter check
-                if is_spam_filter_enabled:
-                    async with lock:
-                        if user_id_to_check in already_sent_ids:
-                            filtered_count += 1
-                            return
-                        already_sent_ids.add(user_id_to_check)
-                
-                # Send friend request with circuit breaker
-                url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={user_id_to_check}&isOkay=1"
-                base_headers = {"meeff-access-token": token}
-                headers = get_headers_with_device_info(base_headers, device_info)
-                
-                try:
-                    circuit_breaker = circuit_breakers[user_id]
-                    
-                    @circuit_breaker.call
-                    async def make_request():
-                        timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-                        async with session.get(url, headers=headers, timeout=timeout) as response:
-                            return await response.json()
-                    
-                    data = await make_request()
-                    
-                    if data.get("errorCode") == "LikeExceeded":
-                        logging.info(f"Daily limit reached for {token_name}")
-                        limit_reached = True
-                        return
-                    
-                    if is_spam_filter_enabled:
-                        ids_to_persist.append(user_id_to_check)
-                    
-                    # Send user info
-                    details = format_user_optimized(user)
-                    success = await send_user_info_safe(bot, user_id, user, details)
-                    
-                    if success:
-                        added_count += 1
-                        state["total_added_friends"] += 1
-                    
-                    await asyncio.sleep(PER_USER_DELAY)
-                    
-                except Exception as e:
-                    logging.error(f"Error processing user {user_id_to_check}: {e}")
-                    state["error_count"] += 1
-                    await asyncio.sleep(PER_ERROR_DELAY)
-        
-        # Process batch concurrently
-        tasks = [process_single_user(user) for user in batch]
-        await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Check if we should stop due to errors or limits
-        if limit_reached or state["error_count"] > 10:
-            break
-    
-    # Persist spam filter IDs
-    if is_spam_filter_enabled and ids_to_persist:
+        url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={user_id_to_check}&isOkay=1"
+        base_headers = {"meeff-access-token": token}
+        headers = get_headers_with_device_info(base_headers, device_info)
+
         try:
-            await asyncio.wait_for(
-                bulk_add_sent_ids(user_id, "request", ids_to_persist),
-                timeout=5.0
-            )
-        except asyncio.TimeoutError:
-            logging.warning("Timeout persisting spam filter IDs")
+            async with session.get(url, headers=headers) as response:
+                data = await response.json()
+
+                if data.get("errorCode") == "LikeExceeded":
+                    logging.info(f"Daily like limit reached for {token_name}.")
+                    limit_reached = True
+                    break
+
+                if is_spam_filter_enabled:
+                    ids_to_persist.append(user_id_to_check)
+
+                # --- NEW FASTER METHOD ---
+                details = format_user(user)
+                first_photo_url = user.get('photoUrls', [None])[0]
+
+                if first_photo_url:
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        photo=first_photo_url,
+                        caption=details,
+                        parse_mode="HTML"
+                    )
+                else:
+                    await bot.send_message(
+                        chat_id=user_id,
+                        text=details,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True
+                    )
+                
+                added_count += 1
+                state["total_added_friends"] += 1
+                await asyncio.sleep(PER_USER_DELAY)
+        
         except Exception as e:
-            logging.error(f"Error persisting IDs: {e}")
+            logging.error(f"Error processing user with {token_name}: {e}")
+            await asyncio.sleep(PER_ERROR_DELAY)
+    
+    if is_spam_filter_enabled and ids_to_persist:
+        await bulk_add_sent_ids(user_id, "request", ids_to_persist)
 
     return limit_reached, added_count, filtered_count
 
-async def update_status_safe(bot, user_id, message_id, text, markup=None):
-    """Safely update status message with rate limiting."""
+
+async def run_requests(user_id, bot, target_channel_id):
+    """Main function to run the request process for a single token."""
     state = user_states[user_id]
-    now = datetime.now()
+    state.update({"total_added_friends": 0, "batch_index": 0, "running": True, "stopped": False})
     
-    # Rate limit status updates (max once per second)
-    if state.get("last_update") and (now - state["last_update"]).total_seconds() < 1:
-        return
-    
-    try:
-        await asyncio.wait_for(
-            bot.edit_message_text(
-                chat_id=user_id,
-                message_id=message_id,
-                text=text,
-                reply_markup=markup,
-                parse_mode="HTML"
-            ),
-            timeout=3.0
-        )
-        state["last_update"] = now
-    except asyncio.TimeoutError:
-        logging.warning("Status update timeout")
-    except Exception as e:
-        if "message is not modified" not in str(e):
-            logging.error(f"Status update failed: {e}")
-
-
-async def run_requests(user_id: int, bot: Bot, target_channel_id: str) -> None:
-    """
-    Main function to process friend requests for a single token with robust error handling.
-    
-    Args:
-        user_id: Telegram user ID.
-        bot: Aiogram Bot instance.
-        target_channel_id: Target channel ID (if applicable).
-    """
-    state = user_states[user_id]
-    state.update({
-        "total_added_friends": 0,
-        "batch_index": 0,
-        "running": True,
-        "stopped": False,
-        "error_count": 0,
-        "last_update": None
-    })
-
-    # Get current token
     token = await get_current_account(user_id)
     if not token:
-        await update_status_safe(bot, user_id, state["status_message_id"], "No active account found.")
+        await bot.edit_message_text(chat_id=user_id, message_id=state["status_message_id"], text="No active account found.")
         state["running"] = False
         return
 
-    # Get token details
     tokens = await get_active_tokens(user_id)
     token_name = next((t.get("name", "Default") for t in tokens if t["token"] == token), "Default")
+    
     already_sent_ids = await get_already_sent_ids(user_id, "request")
     lock = asyncio.Lock()
 
-    # Configure HTTP client
-    connector = aiohttp.TCPConnector(limit=30, limit_per_host=10)
-    timeout = aiohttp.ClientTimeout(total=30)
-
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        empty_batch_count = 0
-
+    async with aiohttp.ClientSession() as session:
         while state["running"]:
             try:
-                # Apply account filters if enabled
-                if await is_request_filter_enabled(user_id):
+                if is_request_filter_enabled(user_id):
                     await apply_filter_for_account(token, user_id)
                     await asyncio.sleep(1)
-
-                # Update status message
-                await update_status_safe(
-                    bot, user_id, state["status_message_id"],
-                    f"{token_name}: Requests sent: {state['total_added_friends']}",
-                    stop_markup
+                
+                await bot.edit_message_text(
+                    chat_id=user_id,
+                    message_id=state["status_message_id"],
+                    text=f"{token_name}: Requests sent: {state['total_added_friends']}",
+                    reply_markup=stop_markup
                 )
 
-                # Fetch users
-                users = await fetch_users_with_retry(session, token, user_id)
+                users = await fetch_users(session, token, user_id)
                 state["batch_index"] += 1
-
+                
                 if users is None:
-                    await update_status_safe(
-                        bot, user_id, state["status_message_id"],
-                        f"{token_name}: Invalid token (401 Unauthorized). Stopping."
+                    await bot.edit_message_text(
+                        chat_id=user_id, message_id=state["status_message_id"],
+                        text=f"{token_name}: Token is invalid (401 Unauthorized). Stopping."
                     )
                     state["running"] = False
                     break
 
                 if not users:
-                    empty_batch_count += 1
-                    logging.info(f"Empty batch {empty_batch_count}/5 for batch {state['batch_index']}")
-
-                    if empty_batch_count >= 5:
-                        await update_status_safe(
-                            bot, user_id, state["status_message_id"],
-                            f"{token_name}: No more users found. Total: {state['total_added_friends']}"
+                    logging.info(f"No users found for batch {state['batch_index']}.")
+                    if state["batch_index"] > 10:
+                        await bot.edit_message_text(
+                            chat_id=user_id, message_id=state["status_message_id"],
+                            text=f"{token_name}: No more users found. Total: {state['total_added_friends']}"
                         )
                         state["running"] = False
                         break
-
                     await asyncio.sleep(EMPTY_BATCH_DELAY)
                     continue
-
-                empty_batch_count = 0
-
-                # Process user batch
-                limit_reached, batch_added, batch_filtered = await process_users_batch(
-                    session, users, token, user_id, bot, token_name, already_sent_ids, lock
-                )
-
+                
+                limit_reached, _, _ = await process_users(session, users, token, user_id, bot, token_name, already_sent_ids, lock)
                 if limit_reached:
-                    await update_status_safe(
-                        bot, user_id, state["status_message_id"],
-                        f"{token_name}: Daily limit reached. Total: {state['total_added_friends']}"
-                    )
                     state["running"] = False
                     break
-
-                if state["error_count"] > 20:
-                    await update_status_safe(
-                        bot, user_id, state["status_message_id"],
-                        f"{token_name}: Too many errors. Stopping. Total: {state['total_added_friends']}"
-                    )
-                    state["running"] = False
-                    break
-
+                
                 await asyncio.sleep(PER_BATCH_DELAY)
-
+            
             except Exception as e:
-                logging.error(f"Main loop error: {e}")
-                state["error_count"] += 1
+                logging.error(f"Error during processing: {e}")
                 await asyncio.sleep(PER_ERROR_DELAY)
 
-    # Cleanup pinned message
     if state.get("pinned_message_id"):
-        try:
-            await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
-        except Exception:
-            pass
-
-    # Final status
+        try: await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
+        except Exception: pass
+    
     status = "Stopped" if state.get("stopped") else "Completed"
-    await bot.send_message(
-        user_id,
-        f"✅ {status}! Total Added: {state.get('total_added_friends', 0)}"
-    )
+    await bot.send_message(user_id, f"✅ {status}! Total Added: {state.get('total_added_friends', 0)}")
 
-async def process_all_tokens(user_id: int, tokens: list, bot: Bot, target_channel_id: str) -> None:
-    """
-    Process friend requests across multiple tokens with concurrency control and UI updates.
 
-    Args:
-        user_id: Telegram user ID.
-        tokens: List of token objects.
-        bot: Aiogram Bot instance.
-        target_channel_id: Target channel ID (if applicable).
-    """
+async def process_all_tokens(user_id, tokens, bot, target_channel_id):
+    """Process friend requests for all tokens concurrently with a shared spam filter list."""
     state = user_states[user_id]
-    state.update({
-        "total_added_friends": 0,
-        "running": True,
-        "stopped": False,
-        "error_count": 0
-    })
+    state.update({"total_added_friends": 0, "running": True, "stopped": False})
 
-    # Send initial status message
-    status_message = await bot.send_message(
-        chat_id=user_id,
-        text="🔄 <b>AIO Starting...</b>",
-        parse_mode="HTML",
-        reply_markup=stop_markup
-    )
+    status_message = await bot.send_message(chat_id=user_id, text="🔄 <b>AIO Starting...</b>", parse_mode="HTML", reply_markup=stop_markup)
     state["status_message_id"] = status_message.message_id
-
-    # Pin status message
     try:
-        await bot.pin_chat_message(
-            chat_id=user_id,
-            message_id=status_message.message_id,
-            disable_notification=True
-        )
+        await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id, disable_notification=True)
         state["pinned_message_id"] = status_message.message_id
     except Exception as e:
         logging.error(f"Failed to pin message: {e}")
 
-    # Initialize token status
     token_status = {
         token_obj["token"]: {
             "name": token_obj.get("name", f"Account {i+1}"),
             "added": 0,
             "filtered": 0,
-            "status": "Queued",
-            "errors": 0  # Track errors per token
+            "status": "Queued"
         } for i, token_obj in enumerate(tokens)
     }
+    
     session_sent_ids = await get_already_sent_ids(user_id, "request")
     lock = asyncio.Lock()
 
-    async def process_token(token_obj: dict) -> None:
-        """
-        Worker function to process a single token.
+    async def _worker(token_obj):
+        token = token_obj["token"]
+        name = token_status[token]["name"]
+        empty_batches = 0
         
-        Args:
-            token_obj: Token object containing token and name.
-        """
-        async with asyncio.Semaphore(MAX_CONCURRENT_TOKENS):
-            token = token_obj["token"]
-            name = token_status[token]["name"]
-            empty_batches = 0
+        async with aiohttp.ClientSession() as session:
+            while state["running"]:
+                try:
+                    if is_request_filter_enabled(user_id):
+                        await apply_filter_for_account(token, user_id)
+                        await asyncio.sleep(1)
 
-            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
-            timeout = aiohttp.ClientTimeout(total=30)
-
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                while state["running"]:
-                    try:
-                        # Check if request filter is enabled
-                        filter_enabled = await is_request_filter_enabled(user_id)
-                        if not isinstance(filter_enabled, bool):
-                            logging.error(f"Expected boolean from is_request_filter_enabled, got {type(filter_enabled)}")
-                            filter_enabled = False  # Fallback to False to prevent further errors
+                    users = await fetch_users(session, token, user_id)
+                    
+                    if users is None:
+                        token_status[token]["status"] = "Invalid (401)"
+                        return
+                    
+                    if not users or len(users) < 5:
+                        empty_batches += 1
+                        token_status[token]["status"] = f"Waiting ({empty_batches}/10)"
+                        await asyncio.sleep(EMPTY_BATCH_DELAY)
+                        if empty_batches >= 10:
+                            token_status[token]["status"] = "No users"
+                            return
+                        continue
+                    
+                    empty_batches = 0
+                    token_status[token]["status"] = "Processing"
+                    
+                    limit_reached, batch_added, batch_filtered = await process_users(session, users, token, user_id, bot, name, session_sent_ids, lock)
+                    
+                    token_status[token]["added"] += batch_added
+                    token_status[token]["filtered"] += batch_filtered
+                    
+                    if limit_reached:
+                        token_status[token]["status"] = "Limit Full"
+                        return
                         
-                        if filter_enabled:
-                            await apply_filter_for_account(token, user_id)
-                            await asyncio.sleep(1)
+                    await asyncio.sleep(PER_BATCH_DELAY)
 
-                        users = await fetch_users_with_retry(session, token, user_id)
+                except Exception as e:
+                    logging.error(f"Error processing {name}: {e}")
+                    token_status[token]["status"] = "Retrying..."
+                    await asyncio.sleep(PER_ERROR_DELAY)
+        
+        token_status[token]["status"] = "Stopped"
 
-                        if users is None:
-                            token_status[token]["status"] = "Invalid (401)"
-                            return
-
-                        if not users or len(users) < 3:
-                            empty_batches += 1
-                            token_status[token]["status"] = f"Waiting ({empty_batches}/5)"
-
-                            if empty_batches >= 5:
-                                token_status[token]["status"] = "No users"
-                                return
-
-                            await asyncio.sleep(EMPTY_BATCH_DELAY)
-                            continue
-
-                        empty_batches = 0
-                        token_status[token]["status"] = "Processing"
-
-                        limit_reached, batch_added, batch_filtered = await process_users_batch(
-                            session, users, token, user_id, bot, name, session_sent_ids, lock
-                        )
-
-                        token_status[token]["added"] += batch_added
-                        token_status[token]["filtered"] += batch_filtered
-
-                        if limit_reached:
-                            token_status[token]["status"] = "Limit Full"
-                            return
-
-                        if token_status[token]["errors"] > 10:
-                            token_status[token]["status"] = "Too many errors"
-                            return
-
-                        await asyncio.sleep(PER_BATCH_DELAY)
-
-                    except Exception as e:
-                        logging.error(f"Error processing {name}: {e}")
-                        token_status[token]["errors"] += 1
-                        token_status[token]["status"] = "Retrying..."
-                        await asyncio.sleep(PER_ERROR_DELAY)
-
-            token_status[token]["status"] = "Stopped"
-
-    async def refresh_ui() -> None:
-        """
-        Periodically refresh the status UI with token progress, ensuring aligned columns.
-        """
+    async def _refresh_ui():
         last_message = ""
-        update_count = 0
-
-        # Calculate maximum name length for consistent column width
-        max_name_length = max(len(status["name"]) for status in token_status.values())
-        max_name_length = min(max_name_length, 20)  # Cap at 20 characters to prevent overflow
-
         while state["running"]:
-            try:
-                update_count += 1
-                total_added = sum(status["added"] for status in token_status.values())
+            total_added_now = sum(status["added"] for status in token_status.values())
+            header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}"
+            
+            lines = [header, "", "<pre>Account   │Added │Filter│Status      </pre>"]
+            for status in token_status.values():
+                name = status["name"]
+                display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
+                lines.append(f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']:<10}</pre>")
 
-                header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added}"
-                lines = [header, "", f"<pre>{'Account'.ljust(max_name_length)} │Added │Filter│Status      </pre>"]
-                for status in token_status.values():
-                    name = status["name"]
-                    display = (name[:max_name_length-1] + '…') if len(name) > max_name_length else name.ljust(max_name_length)
-                    lines.append(
-                        f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']:<11}</pre>"
-                    )
-
-                current_message = "\n".join(lines)
-
-                if current_message != last_message and update_count % 2 == 0:
-                    await update_status_safe(
-                        bot, user_id, state["status_message_id"],
-                        current_message, stop_markup
+            current_message = "\n".join(lines)
+            if current_message != last_message:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=user_id, message_id=state["status_message_id"],
+                        text=current_message, parse_mode="HTML", reply_markup=stop_markup
                     )
                     last_message = current_message
+                except Exception as e:
+                    if "message is not modified" not in str(e):
+                        logging.error(f"Status update failed: {e}")
+            await asyncio.sleep(1)
 
-                await asyncio.sleep(2)
-
-            except Exception as e:
-                logging.error(f"UI refresh error: {e}")
-                await asyncio.sleep(5)
-
-    # Start UI refresh and token workers
-    ui_task = asyncio.create_task(refresh_ui())
-    worker_tasks = [asyncio.create_task(process_token(token_obj)) for token_obj in tokens]
-
-    # Wait for workers to complete
+    # Start UI updater and workers
+    ui_task = asyncio.create_task(_refresh_ui())
+    worker_tasks = [asyncio.create_task(_worker(token_obj)) for token_obj in tokens]
     await asyncio.gather(*worker_tasks, return_exceptions=True)
 
-    # Cleanup
+    # Clean up
     state["running"] = False
-    await asyncio.sleep(2)
+    await asyncio.sleep(1.1)
     ui_task.cancel()
-
     if state.get("pinned_message_id"):
-        try:
-            await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
-        except Exception:
-            pass
+        try: await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
+        except Exception: pass
 
-    # Final status with aligned columns
+    # Final Status UI
     total_added = sum(status["added"] for status in token_status.values())
     completion_status = "⚠️ Process Stopped" if state.get("stopped") else "✅ AIO Requests Completed"
-
-    final_lines = [
-        f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}",
-        "", f"<pre>{'Account'.ljust(max_name_length)} │Added │Filter│Status      </pre>"
-    ]
+    final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
+    
+    final_lines = [final_header, "", "<pre>Account   │Added │Filter│Status      </pre>"]
     for status in token_status.values():
         name = status["name"]
-        display = (name[:max_name_length-1] + '…') if len(name) > max_name_length else name.ljust(max_name_length)
-        final_lines.append(
-            f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']}</pre>"
-        )
+        display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
+        final_lines.append(f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']}</pre>")
 
-    await update_status_safe(
-        bot, user_id, state["status_message_id"],
-        "\n".join(final_lines)
+    await bot.edit_message_text(
+        chat_id=user_id, message_id=state["status_message_id"],
+        text="\n".join(final_lines), parse_mode="HTML"
     )
