@@ -25,7 +25,18 @@ async def _ensure_user_collection_exists(telegram_user_id):
             {"type": "filters", "data": {}},
             {"type": "info_cards", "data": {}}
         ])
+# Add this new function to your db.py file
 
+async def get_all_user_filters(user_id: int):
+    """
+    Efficiently fetches all filter documents for a user and returns a dictionary
+    mapping token to its filter data.
+    """
+    collection = await get_user_collection(user_id)
+    filters_cursor = collection.find({"type": "filters"}, {"_id": 0, "token": 1, "filters": 1})
+    
+    # Create a dictionary for quick lookups: {token: {filter_data}}
+    return {doc.get("token"): doc.get("filters", {}) async for doc in filters_cursor}
 # Enhanced DB Collection Management Functions
 async def list_all_collections():
     collection_names = await db.list_collection_names()
