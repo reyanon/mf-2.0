@@ -1,12 +1,27 @@
 from pymongo import MongoClient
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
+import os
+from dotenv import load_dotenv
 
-# MongoDB connection using the asynchronous Motor client
-client = AsyncIOMotorClient("mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB")
-db = client.meeff_bot
+# --- CORRECTED SETUP ---
+load_dotenv()
+# Make sure your .env file has MONGO_URI="mongodb+srv://..."
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/meeff_bot?retryWrites=true&w=majority&appName=RexDB")
+client = AsyncIOMotorClient(MONGO_URI)
+# The database name should be part of the client or specified here
+db = client.get_database()
 
-# Helper function to get a user's collection
+# --- ADD THIS MISSING ASYNC FUNCTION ---
+async def get_user_collection(user_id: int):
+    """
+    Retrieves the correct MongoDB collection for a given user.
+    This is the async version required by other functions.
+    """
+    collection_name = f"user_{user_id}"
+    return db[collection_name]
+
+# Helper function to get a user's collection (synchronous version for internal use if needed)
 def _get_user_collection(telegram_user_id):
     """Get the collection for a user"""
     collection_name = f"user_{telegram_user_id}"
@@ -25,18 +40,25 @@ async def _ensure_user_collection_exists(telegram_user_id):
             {"type": "filters", "data": {}},
             {"type": "info_cards", "data": {}}
         ])
-# Add this new function to your db.py file
 
+# This function will now work correctly
 async def get_all_user_filters(user_id: int):
     """
     Efficiently fetches all filter documents for a user and returns a dictionary
     mapping token to its filter data.
     """
-    collection = await get_user_collection(user_id)
-    filters_cursor = collection.find({"type": "filters"}, {"_id": 0, "token": 1, "filters": 1})
+    collection = await get_user_collection(user_id) # This line is now fixed
+    # This assumes filters are stored inside the 'tokens' document, let's correct the logic
+    tokens_doc = await collection.find_one({"type": "tokens"})
+    if not tokens_doc or "items" not in tokens_doc:
+        return {}
     
-    # Create a dictionary for quick lookups: {token: {filter_data}}
-    return {doc.get("token"): doc.get("filters", {}) async for doc in filters_cursor}
+    return {
+        token_item.get("token"): token_item.get("filters", {})
+        for token_item in tokens_doc.get("items", [])
+        if "token" in token_item
+    }
+
 # Enhanced DB Collection Management Functions
 async def list_all_collections():
     collection_names = await db.list_collection_names()
@@ -130,20 +152,41 @@ async def get_info_card(telegram_user_id, token):
         return cards_doc["data"][token].get("info")
     return None
 
-async def set_token(telegram_user_id, token, meeff_user_id, email=None, filters=None):
+async def set_token(telegram_user_id, token, name, email=None, filters=None, active=True):
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
     
-    update_fields = {"items.$.name": meeff_user_id}
-    if email: update_fields["items.$.email"] = email
-    if filters: update_fields["items.$.filters"] = filters
+    # Check if the token already exists
+    token_exists = await user_db.count_documents({"type": "tokens", "items.token": token}) > 0
     
-    result = await user_db.update_one({"type": "tokens", "items.token": token}, {"$set": update_fields})
-    if result.matched_count == 0:
-        token_data = {"token": token, "name": meeff_user_id, "active": True}
+    if token_exists:
+        # Update existing token
+        update_fields = {
+            "items.$.name": name,
+            "items.$.active": active
+        }
+        if email: update_fields["items.$.email"] = email
+        if filters: update_fields["items.$.filters"] = filters
+        
+        await user_db.update_one(
+            {"type": "tokens", "items.token": token},
+            {"$set": update_fields}
+        )
+    else:
+        # Add new token
+        token_data = {
+            "token": token,
+            "name": name,
+            "active": active
+        }
         if email: token_data["email"] = email
         if filters: token_data["filters"] = filters
-        await user_db.update_one({"type": "tokens"}, {"$push": {"items": token_data}}, upsert=True)
+        
+        await user_db.update_one(
+            {"type": "tokens"},
+            {"$push": {"items": token_data}},
+            upsert=True
+        )
 
 async def toggle_token_status(telegram_user_id, token):
     await _ensure_user_collection_exists(telegram_user_id)
@@ -251,7 +294,7 @@ async def add_sent_id(telegram_user_id, category, target_id):
     await _ensure_user_collection_exists(telegram_user_id)
     await _get_user_collection(telegram_user_id).update_one({"type": "sent_records"}, {"$addToSet": {f"data.{category}": target_id}}, upsert=True)
 
-async def is_already_sent(telegram_user_id, category, target_id, bulk=False):
+async def is_already_sent(telegram_user_id, category, target_id=None, bulk=False):
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
     if not bulk:
