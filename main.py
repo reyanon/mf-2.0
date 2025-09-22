@@ -13,7 +13,7 @@ from aiogram.exceptions import TelegramBadRequest
 # Import custom modules from the new async db.py
 from db import (
     set_token, get_tokens, set_current_account, get_current_account, delete_token,
-    set_user_filters, get_user_filters, set_spam_filter, get_spam_filter,
+    set_user_filters, get_user_filters, get_all_user_filters, set_spam_filter, get_spam_filter,
     is_already_sent, add_sent_id, toggle_token_status, get_active_tokens,
     get_token_status, set_account_active, get_info_card,
     set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,
@@ -137,7 +137,6 @@ async def send_lounge_all(message: Message):
 
     spam_enabled = await get_individual_spam_filter(user_id, "lounge")
     status = await message.reply(f"<b>Starting Lounge Messages</b> for {len(active_tokens_data)} accounts...", parse_mode="HTML")
-    # FIX: Added 'user_id' as the last argument
     await send_lounge_all_tokens(active_tokens_data, custom_message, status, bot, user_id, spam_enabled, user_id)
 
 @router.message(Command("lounge"))
@@ -153,7 +152,6 @@ async def lounge_command(message: Message):
     custom_message = parts[1]
     spam_enabled = await get_individual_spam_filter(user_id, "lounge")
     status_message = await message.reply(f"<b>Starting Lounge Messaging...</b>", parse_mode="HTML")
-    # FIX: Added 'user_id' as the last argument
     await send_lounge(token, custom_message, status_message, bot, user_id, spam_enabled, user_id)
 
 
@@ -171,7 +169,6 @@ async def send_to_all_command(message: Message):
     spam_enabled = await get_individual_spam_filter(user_id, "chatroom")
     status_message = await message.reply("<b>Starting Chatroom Messages...</b>", parse_mode="HTML")
 
-    # --- FIX: Create sent_ids and lock for the single-token function call ---
     sent_ids = await is_already_sent(user_id, "chatroom", None, bulk=True) if spam_enabled else set()
     sent_ids_lock = asyncio.Lock()
     
@@ -197,7 +194,6 @@ async def send_chat_all(message: Message):
     spam_enabled = await get_individual_spam_filter(user_id, "chatroom")
     status = await message.reply(f"<b>Starting Multi-Account Chatroom ({len(tokens)})...</b>", parse_mode="HTML")
     
-    # --- FIX: Changed use_in_memory_deduplication from False to True to enable spam filter ---
     await send_message_to_everyone_all_tokens(
         tokens, custom_message, status, bot, user_id, spam_enabled, token_names, True, user_id
     )
@@ -224,7 +220,7 @@ async def invoke_command(message: Message):
 
     if disabled_accounts:
         for token_obj in disabled_accounts: await delete_token(user_id, token_obj["token"])
-        removed_names = "\n".join([f"â€¢ {html.escape(acc['name'])}" for acc in disabled_accounts])
+        removed_names = "\n".join([f"• {html.escape(acc['name'])}" for acc in disabled_accounts])
         await status_msg.edit_text(f"<b>Cleanup Complete</b>\nWorking: {len(working_accounts)}\nRemoved: {len(disabled_accounts)}\n\n<b>Removed accounts:</b>\n{removed_names}", parse_mode="HTML")
     else:
         await status_msg.edit_text(f"<b>All Accounts Working ({len(working_accounts)} total).</b>", parse_mode="HTML")
@@ -303,7 +299,7 @@ async def handle_new_token(message: Message):
                 return await verification_msg.edit_text("<b>Verification Error</b>.", parse_mode="HTML")
 
         account_name = token_data[1] if len(token_data) > 1 else f"Account {len(await get_tokens(user_id)) + 1}"
-        await set_token(user_id, token, account_name) # Fixed: Only pass 3 arguments, not 4
+        await set_token(user_id, token, account_name)
         await verification_msg.edit_text(f"<b>Token Verified</b> and saved as '<code>{html.escape(account_name)}</code>'.", parse_mode="HTML")
 
 async def show_manage_accounts_menu(callback_query: CallbackQuery):
@@ -314,15 +310,18 @@ async def show_manage_accounts_menu(callback_query: CallbackQuery):
     if not tokens:
         return await callback_query.message.edit_text("<b>No Accounts Found</b>...", reply_markup=back_markup, parse_mode="HTML")
 
+    # --- FIX: Fetch all filters at once for performance ---
+    all_filters = await get_all_user_filters(user_id)
+
     buttons = []
     for i, tok in enumerate(tokens):
         is_current = "🔹" if tok['token'] == current_token else "▫️"
         
-        # Fetch user filters to get nationality
-        user_filters = await get_user_filters(user_id, tok['token']) or {}
-        nationality_code = user_filters.get("filterNationalityCode", "")
+        # Get nationality from the pre-fetched data
+        token_filters = all_filters.get(tok['token'], {})
+        nationality_code = token_filters.get("filterNationalityCode", "")
         
-        # Format the display name with nationality if it exists
+        # Format the display name
         account_name = html.escape(tok['name'][:15])
         display_name = f"{account_name} ({nationality_code})" if nationality_code else account_name
 
@@ -443,10 +442,13 @@ async def callback_handler(callback_query: CallbackQuery):
         elif data == "start_all":
             tokens = await get_active_tokens(user_id)
             if not tokens: return await callback_query.answer("No active tokens found.", show_alert=True)
-            msg = await callback_query.message.edit_text(f"<b>Starting Multi-Account Requests ({len(tokens)})...</b>", reply_markup=stop_markup, parse_mode="HTML")
+            
+            # --- FIX: This is now the ONLY starting message ---
+            msg = await callback_query.message.edit_text(f"🔄 <b>AIO Starting ({len(tokens)})...</b>", reply_markup=stop_markup, parse_mode="HTML")
             state.update({"running": True, "status_message_id": msg.message_id, "pinned_message_id": msg.message_id})
-            await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
-            asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID))
+
+            # --- FIX: Pass the message object to the function ---
+            asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID, initial_status_message=msg))
         elif data == "stop":
             state.update({"running": False, "stopped": True})
             await callback_query.message.edit_text(f"<b>Requests Stopped.</b>", reply_markup=start_markup, parse_mode="HTML")
