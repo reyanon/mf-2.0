@@ -317,7 +317,20 @@ async def show_manage_accounts_menu(callback_query: CallbackQuery):
     buttons = []
     for i, tok in enumerate(tokens):
         is_current = "🔹" if tok['token'] == current_token else "▫️"
-        buttons.append([InlineKeyboardButton(text=f"{is_current} {html.escape(tok['name'][:15])}", callback_data=f"set_account_{i}"), InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"toggle_status_{i}"), InlineKeyboardButton(text="View", callback_data=f"view_account_{i}")])
+        
+        # Fetch user filters to get nationality
+        user_filters = await get_user_filters(user_id, tok['token']) or {}
+        nationality_code = user_filters.get("filterNationalityCode", "")
+        
+        # Format the display name with nationality if it exists
+        account_name = html.escape(tok['name'][:15])
+        display_name = f"{account_name} ({nationality_code})" if nationality_code else account_name
+
+        buttons.append([
+            InlineKeyboardButton(text=f"{is_current} {display_name}", callback_data=f"set_account_{i}"),
+            InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"toggle_status_{i}"),
+            InlineKeyboardButton(text="View", callback_data=f"view_account_{i}")
+        ])
     buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
     
     try:
