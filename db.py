@@ -2,7 +2,7 @@ from pymongo import MongoClient
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
-from dotenv import load_dotenv
+
 
 # MongoDB connection using the asynchronous Motor client
 client = AsyncIOMotorClient("mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB")
