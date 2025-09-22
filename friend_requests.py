@@ -460,212 +460,205 @@ async def run_requests_improved(user_id, bot, target_channel_id):
         f"✅ {status}! Total Added: {state.get('total_added_friends', 0)}"
     )
 
+
+
 async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
-    """
-    Processes all tokens using the "Passing the Baton" (distributed fetching) model.
-    Accounts take turns fetching users and sorting them into nationality-specific queues.
-    """
-    # 1. ==================== SETUP ====================
-    state = user_states[user_id]
+    """Improved multi-token processing with guaranteed UI alignment."""
+    state = user_states.setdefault(user_id, {})
     state.update({
-        "total_added_friends": 0, "running": True, "stopped": False, "error_count": 0
+        "total_added_friends": 0,
+        "running": True,
+        "stopped": False,
+        "error_count": 0
     })
 
-    status_message = await bot.send_message(chat_id=user_id, text="🔄 <b>AIO Team Setup...</b>", parse_mode="HTML", reply_markup=stop_markup)
+    status_message = await bot.send_message(
+        chat_id=user_id,
+        text="🔄 <b>AIO Starting...</b>",
+        parse_mode="HTML",
+        reply_markup=stop_markup
+    )
     state["status_message_id"] = status_message.message_id
     
     try:
-        await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id, disable_notification=True)
+        await bot.pin_chat_message(
+            chat_id=user_id,
+            message_id=status_message.message_id,
+            disable_notification=True
+        )
         state["pinned_message_id"] = status_message.message_id
     except Exception as e:
         logging.error(f"Failed to pin message: {e}")
 
-    # --- Shared Resources for the Team ---
-    fetch_lock = asyncio.Lock() # The "baton" that only one account can hold to fetch users.
-    consecutive_fetch_failures = 0 # Counter to stop if no new users are found.
+    # --- ⚙️ Column Configuration ---
+    # Define column widths for perfect alignment
+    COL_ACC = 11   # Account name
+    COL_ADD = 5    # Added
+    COL_FIL = 6    # Filtered
+    COL_STAT = 14  # Status
     
-    # Create a queue for each nationality filter, plus a "general" one.
-    queues_by_nationality = {"general": asyncio.Queue(maxsize=200)}
-    for t in tokens:
-        nat_filter = t.get("nationality_filter")
-        if nat_filter and nat_filter not in queues_by_nationality:
-            queues_by_nationality[nat_filter] = asyncio.Queue(maxsize=100)
+    def format_row(acc, add, filt, stat, is_header=False):
+        """Truncates and pads each column to its fixed width."""
+        # Truncate content if it's too long, leaving space for '…'
+        acc_str = (acc[:COL_ACC - 1] + '…') if len(str(acc)) > COL_ACC else str(acc)
+        stat_str = (stat[:COL_STAT - 1] + '…') if len(str(stat)) > COL_STAT else str(stat)
 
-    # Load IDs from the database (for previous runs)
-    db_sent_ids = await get_already_sent_ids(user_id, "request")
-    # Track IDs processed in this session to prevent duplicate queueing
-    processed_in_session = set() 
+        # Align text: left for text, right for numbers
+        if is_header:
+            padded_acc = acc_str.center(COL_ACC)
+            padded_add = str(add).center(COL_ADD)
+            padded_filt = str(filt).center(COL_FIL)
+            padded_stat = str(stat).center(COL_STAT)
+        else:
+            padded_acc = acc_str.ljust(COL_ACC)
+            padded_add = str(add).rjust(COL_ADD)
+            padded_filt = str(filt).rjust(COL_FIL)
+            padded_stat = str(stat).ljust(COL_STAT)
+
+        return f"{padded_acc} │ {padded_add} │ {padded_filt} │ {padded_stat}"
+
+    # --- End of Configuration ---
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TOKENS)
     
     token_status = {
-        t["token"]: {"name": t.get("name", f"Acc {i+1}"), "added": 0, "status": "Queued"} 
-        for i, t in enumerate(tokens)
+        token_obj["token"]: {
+            "name": token_obj.get("name", f"Account {i+1}"),
+            "added": 0, "filtered": 0, "status": "Queued"
+        } for i, token_obj in enumerate(tokens)
     }
+    
+    session_sent_ids = await get_already_sent_ids(user_id, "request")
+    lock = asyncio.Lock()
 
-    # 2. ==================== THE WORKER LOGIC (Fetch & Add) ====================
-    async def _worker(token_obj):
-        nonlocal consecutive_fetch_failures
-        token = token_obj["token"]
-        name = token_status[token]["name"]
-        my_nationality = token_obj.get("nationality_filter")
-        my_queue_key = my_nationality if my_nationality else "general"
-        my_queue = queues_by_nationality[my_queue_key]
-        token_status[token]["status"] = "Starting"
+    async def _worker_improved(token_obj):
+        async with semaphore:
+            token = token_obj["token"]
+            name = token_status[token]["name"]
+            empty_batches = 0
+            
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            timeout = aiohttp.ClientTimeout(total=30)
+            
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                while state.get("running", False):
+                    try:
+                        if is_request_filter_enabled(user_id):
+                            await apply_filter_for_account(token, user_id)
+                            await asyncio.sleep(1)
 
-        device_info = await get_or_create_device_info_for_token(user_id, token)
-        base_headers = {"meeff-access-token": token}
-        headers = get_headers_with_device_info(base_headers, device_info)
-
-        async with aiohttp.ClientSession() as session:
-            while state["running"]:
-                try:
-                    # -- Stage 1: Try to be a regular WORKER --
-                    # Try to get a user from my assigned queue, but don't wait forever.
-                    user = await asyncio.wait_for(my_queue.get(), timeout=2.0)
-
-                    if user is None: # Shutdown signal
-                        my_queue.put_nowait(None) # Put it back for others
-                        break
-
-                    token_status[token]["status"] = "Adding"
-                    user_meeff_id = user["_id"]
-                    
-                    # Send friend request
-                    url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={user_meeff_id}&isOkay=1"
-                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                        data = await response.json()
-                        if data.get("errorCode") == "LikeExceeded":
-                            token_status[token]["status"] = "Limit Full"
-                            my_queue.task_done()
-                            return # This worker is done for the day
-
-                        # On success, update UI and persist ID later
-                        details = format_user_optimized(user)
-                        if await send_user_info_safe(bot, user_id, user, details):
-                            token_status[token]["added"] += 1
-                            state["total_added_friends"] += 1
-
-                    my_queue.task_done()
-                    token_status[token]["status"] = "Waiting"
-                    await asyncio.sleep(PER_USER_DELAY)
-
-                except asyncio.TimeoutError:
-                    # -- Stage 2: My queue is empty, try to become the SCOUT --
-                    if fetch_lock.locked():
-                        token_status[token]["status"] = "Queued..."
-                        await asyncio.sleep(3) # Wait for the current scout to finish
-                        continue
-                    
-                    # I am the first to notice, I will grab the baton!
-                    async with fetch_lock:
-                        # Double-check if someone else filled the queue while I was waiting for the lock.
-                        if not my_queue.empty():
-                            continue
-
-                        token_status[token]["status"] = "Fetching..."
                         users = await fetch_users_with_retry(session, token, user_id)
                         
-                        if not users:
-                            consecutive_fetch_failures += 1
-                            if consecutive_fetch_failures > len(tokens) * 2: # If we fail many times in a row
-                                logging.warning("No new users found after many attempts. Shutting down.")
-                                for q in queues_by_nationality.values():
-                                    q.put_nowait(None) # Send shutdown signal to all workers
+                        if users is None:
+                            token_status[token]["status"] = "Invalid (401)"
+                            return
+                        
+                        if not users or len(users) < 3:
+                            empty_batches += 1
+                            token_status[token]["status"] = f"Waiting ({empty_batches}/5)"
+                            
+                            if empty_batches >= 5:
+                                token_status[token]["status"] = "No users"
+                                return
+                            
+                            await asyncio.sleep(EMPTY_BATCH_DELAY)
                             continue
+                        
+                        empty_batches = 0
+                        token_status[token]["status"] = "Processing"
+                        
+                        limit_reached, batch_added, batch_filtered = await process_users_batch(
+                            session, users, token, user_id, bot, name, session_sent_ids, lock
+                        )
+                        
+                        token_status[token]["added"] += batch_added
+                        token_status[token]["filtered"] += batch_filtered
+                        
+                        if limit_reached:
+                            token_status[token]["status"] = "Limit Full"
+                            return
+                        
+                        error_count = token_status[token].get("errors", 0)
+                        if error_count > 10:
+                            token_status[token]["status"] = "Too many errors"
+                            return
+                            
+                        await asyncio.sleep(PER_BATCH_DELAY)
 
-                        # We found users! Reset failure counter and sort them.
-                        consecutive_fetch_failures = 0
-                        new_users_count = 0
-                        for u in users:
-                            uid = u["_id"]
-                            if uid not in db_sent_ids and uid not in processed_in_session:
-                                processed_in_session.add(uid)
-                                user_nat = u.get("nationalityCode")
-                                
-                                # Sort user into the correct queue (bin)
-                                if user_nat in queues_by_nationality:
-                                    await queues_by_nationality[user_nat].put(u)
-                                else:
-                                    await queues_by_nationality["general"].put(u)
-                                new_users_count += 1
-                        logging.info(f"Team Fetch: {name} added {new_users_count} users to the queues.")
+                    except Exception as e:
+                        logging.error(f"Error processing {name}: {e}")
+                        token_status[token]["status"] = "Retrying..."
+                        await asyncio.sleep(PER_ERROR_DELAY)
+            
+            if not state.get("running", False):
+                 token_status[token]["status"] = "Stopped"
 
-                except Exception as e:
-                    logging.error(f"Worker {name} error: {e}")
-                    token_status[token]["status"] = "Error"
-                    await asyncio.sleep(PER_ERROR_DELAY)
-                    
-        token_status[token]["status"] = "Done"
-
-# 3. ==================== UI REFRESHER ====================
     async def _refresh_ui_improved():
         last_message = ""
-        while state["running"]:
+        while state.get("running", False):
             try:
                 total_added_now = sum(status["added"] for status in token_status.values())
                 
-                q_summary_parts = []
-                for nat, q in queues_by_nationality.items():
-                    if q.qsize() > 0:
-                        q_summary_parts.append(f"{nat.upper()}:{q.qsize()}")
-                q_summary = " | ".join(q_summary_parts)
+                header_title = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}"
                 
-                header = f"🔄 <b>AIO Requests</b> | <b>Total Added:</b> {total_added_now}\n<pre>Queues: {q_summary}</pre>"
+                # Build the table using the formatter
+                table_header = format_row("Account", "Added", "Filter", "Status", is_header=True)
+                separator = "─" * len(table_header)
                 
-                # --- THIS IS THE PART THAT WAS CHANGED ---
-                # New header for the new format
-                lines = [header, ""] 
-                
+                table_rows = [table_header, separator]
                 for status in token_status.values():
-                    name = status["name"]
-                    # Format the name to a fixed 10-character length
-                    display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
-                    
-                    # New line format with fixed spacing
-                    lines.append(f"<pre>{display_name}| sent : {status['added']:<4} | {status['status']}</pre>")
-                # -----------------------------------------
+                    table_rows.append(format_row(
+                        status["name"], status["added"], status["filtered"], status["status"]
+                    ))
 
-                current_message = "\n".join(lines)
+                current_message = f"{header_title}\n\n<pre>{'\n'.join(table_rows)}</pre>"
+                
                 if current_message != last_message:
-                    await update_status_safe(bot, user_id, state["status_message_id"], current_message, stop_markup)
+                    await update_status_safe(
+                        bot, user_id, state["status_message_id"],
+                        current_message, stop_markup
+                    )
                     last_message = current_message
                 
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2)
+            
             except Exception as e:
                 logging.error(f"UI refresh error: {e}")
+                await asyncio.sleep(5)
 
-    # 4. ==================== START & FINISH ====================
     ui_task = asyncio.create_task(_refresh_ui_improved())
-    worker_tasks = [asyncio.create_task(_worker(td)) for td in tokens]
+    worker_tasks = [asyncio.create_task(_worker_improved(token_obj)) for token_obj in tokens]
     
     await asyncio.gather(*worker_tasks, return_exceptions=True)
 
-    # Cleanup
     state["running"] = False
-    await asyncio.sleep(2)
+    await asyncio.sleep(2.1) # Wait slightly longer than the UI refresh loop
     ui_task.cancel()
     
-    if processed_in_session:
-        logging.info(f"Persisting {len(processed_in_session)} new IDs to database.")
-        await bulk_add_sent_ids(user_id, "request", list(processed_in_session))
-
     if state.get("pinned_message_id"):
-        try: await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
-        except: pass
+        try:
+            await bot.unpin_chat_message(chat_id=user_id, message_id=state["pinned_message_id"])
+        except Exception: pass
 
-# Final Report
+    # Final status update
     total_added = sum(status["added"] for status in token_status.values())
     completion_status = "⚠️ Process Stopped" if state.get("stopped") else "✅ AIO Requests Completed"
+    
     final_header = f"<b>{completion_status}</b> | <b>Total Added:</b> {total_added}"
     
-    # --- UPDATE THIS PART AS WELL ---
-    final_lines = [final_header, ""]
+    final_table_header = format_row("Account", "Added", "Filter", "Status", is_header=True)
+    separator = "─" * len(final_table_header)
+    
+    final_rows = [final_table_header, separator]
     for status in token_status.values():
-        name = status["name"]
-        display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
-        final_lines.append(f"<pre>{display_name}| sent : {status['added']:<4} | {status['status']}</pre>")
-    # --------------------------------
-
-    await update_status_safe(bot, user_id, state["status_message_id"], "\n".join(final_lines))
+        final_rows.append(format_row(
+            status["name"], status["added"], status["filtered"], status["status"]
+        ))
+    
+    await update_status_safe(
+        bot, user_id, state["status_message_id"],
+        f"{final_header}\n\n<pre>{'\n'.join(final_rows)}</pre>"
+    )
 # Expose the improved functions for use in main.py
 run_requests = run_requests_improved
 process_all_tokens = process_all_tokens_improved
