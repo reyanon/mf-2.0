@@ -5,3 +5,5 @@ asyncio-throttle
 cachetools
 motor
 requests
+
+dotenv
