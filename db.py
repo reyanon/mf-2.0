@@ -4,13 +4,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 from dotenv import load_dotenv
 
-# --- CORRECTED SETUP ---
-load_dotenv()
-# Make sure your .env file has MONGO_URI="mongodb+srv://..."
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/meeff_bot?retryWrites=true&w=majority&appName=RexDB")
-client = AsyncIOMotorClient(MONGO_URI)
-# The database name should be part of the client or specified here
-db = client.get_database()
+# MongoDB connection using the asynchronous Motor client
+client = AsyncIOMotorClient("mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB")
+db = client.meeff_bot
 
 # --- ADD THIS MISSING ASYNC FUNCTION ---
 async def get_user_collection(user_id: int):
