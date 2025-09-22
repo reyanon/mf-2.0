@@ -565,41 +565,70 @@ async def process_all_tokens_improved(user_id, tokens, bot, target_channel_id):
             
             token_status[token]["status"] = "Stopped"
 
-    async def _refresh_ui_improved():
-        """Improved UI refresh with better formatting and error handling."""
-        last_message = ""
-        update_count = 0
-        
-        while state["running"]:
-            try:
-                update_count += 1
-                total_added_now = sum(status["added"] for status in token_status.values())
+async def _refresh_ui_improved():
+    """Improved UI refresh with fixed column alignment."""
+    last_message = ""
+    update_count = 0
+    
+    while state["running"]:
+        try:
+            update_count += 1
+            total_added_now = sum(status["added"] for status in token_status.values())
+            
+            # Header
+            header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}"
+            
+            # Define column widths
+            col_account = 12  # Account name width
+            col_added = 6    # Added count width
+            col_filter = 6   # Filtered count width
+            col_status = 12  # Status width
+            
+            # Table header
+            lines = [
+                header,
+                "",
+                f"<pre>{'Account'.ljust(col_account)} | {'Added'.rjust(col_added)} | {'Filter'.rjust(col_filter)} | {'Status'.ljust(col_status)}</pre>",
+                f"<pre>{'-' * col_account} | {'-' * col_added} | {'-' * col_filter} | {'-' * col_status}</pre>",
+            ]
+            
+            # Table rows
+            for status in token_status.values():
+                name = status["name"]
+                # Truncate name to fit column, reserving space for ellipsis if needed
+                if len(name) > col_account - 1:
+                    name = name[:col_account - 2] + "…"
+                else:
+                    name = name.ljust(col_account)
                 
-                header = f"🔄 <b>AIO Requests</b> | <b>Added:</b> {total_added_now}"
+                added = str(status["added"]).rjust(col_added)
+                filtered = str(status["filtered"]).rjust(col_filter)
+                status_text = status["status"]
+                # Truncate or pad status to fit column
+                if len(status_text) > col_status:
+                    status_text = status_text[:col_status - 1] + "…"
+                else:
+                    status_text = status_text.ljust(col_status)
                 
-                lines = [header, "", "<pre>Account    │Added │Filter│Status      </pre>"]
-                for status in token_status.values():
-                    name = status["name"]
-                    display = name[:10] + '…' if len(name) > 10 else name.ljust(10)
-                    lines.append(
-                        f"<pre>{display} │{status['added']:>5} │{status['filtered']:>6}│{status['status']:<11}</pre>"
-                    )
-
-                current_message = "\n".join(lines)
-                
-                # Only update if message changed and not too frequently
-                if current_message != last_message and update_count % 2 == 0:
-                    await update_status_safe(
-                        bot, user_id, state["status_message_id"],
-                        current_message, stop_markup
-                    )
-                    last_message = current_message
-                
-                await asyncio.sleep(2)  # Slower updates to reduce load
-                
-            except Exception as e:
-                logging.error(f"UI refresh error: {e}")
-                await asyncio.sleep(5)
+                lines.append(
+                    f"<pre>{name} | {added} | {filtered} | {status_text}</pre>"
+                )
+            
+            current_message = "\n".join(lines)
+            
+            # Only update if message changed and not too frequently
+            if current_message != last_message and update_count % 2 == 0:
+                await update_status_safe(
+                    bot, user_id, state["status_message_id"],
+                    current_message, stop_markup
+                )
+                last_message = current_message
+            
+            await asyncio.sleep(2)  # Slower updates to reduce load
+            
+        except Exception as e:
+            logging.error(f"UI refresh error: {e}")
+            await asyncio.sleep(5)
 
     # Start UI updater and workers
     ui_task = asyncio.create_task(_refresh_ui_improved())
