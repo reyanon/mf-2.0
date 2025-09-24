@@ -8,7 +8,6 @@ import os
 client = AsyncIOMotorClient("mongodb+srv://irexanon:xUf7PCf9cvMHy8g6@rexdb.d9rwo.mongodb.net/?retryWrites=true&w=majority&appName=RexDB")
 db = client.meeff_bot
 
-# --- ADD THIS MISSING ASYNC FUNCTION ---
 async def get_user_collection(user_id: int):
     """
     Retrieves the correct MongoDB collection for a given user.
@@ -37,14 +36,12 @@ async def _ensure_user_collection_exists(telegram_user_id):
             {"type": "info_cards", "data": {}}
         ])
 
-# This function will now work correctly
 async def get_all_user_filters(user_id: int):
     """
     Efficiently fetches all filter documents for a user and returns a dictionary
     mapping token to its filter data.
     """
-    collection = await get_user_collection(user_id) # This line is now fixed
-    # This assumes filters are stored inside the 'tokens' document, let's correct the logic
+    collection = await get_user_collection(user_id)
     tokens_doc = await collection.find_one({"type": "tokens"})
     if not tokens_doc or "items" not in tokens_doc:
         return {}
@@ -152,11 +149,9 @@ async def set_token(telegram_user_id, token, name, email=None, filters=None, act
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
     
-    # Check if the token already exists
     token_exists = await user_db.count_documents({"type": "tokens", "items.token": token}) > 0
     
     if token_exists:
-        # Update existing token
         update_fields = {
             "items.$.name": name,
             "items.$.active": active
@@ -169,7 +164,6 @@ async def set_token(telegram_user_id, token, name, email=None, filters=None, act
             {"$set": update_fields}
         )
     else:
-        # Add new token
         token_data = {
             "token": token,
             "name": name,
@@ -213,7 +207,7 @@ async def get_tokens(telegram_user_id):
     tokens_doc = await _get_user_collection(telegram_user_id).find_one({"type": "tokens"})
     return tokens_doc.get("items", []) if tokens_doc else []
 
-get_all_tokens = get_tokens  # Alias for compatibility
+get_all_tokens = get_tokens
 
 async def list_tokens():
     result = []
@@ -276,6 +270,41 @@ async def get_all_spam_filters(telegram_user_id: int) -> dict:
         "lounge": settings.get("spam_filter_lounge", False),
     }
 
+async def get_spam_menu_data(telegram_user_id: int) -> dict:
+    """
+    Efficiently fetches all data needed for the spam filter menu in a single DB query.
+    """
+    await _ensure_user_collection_exists(telegram_user_id)
+    collection = _get_user_collection(telegram_user_id)
+    
+    # Fetch both the settings and sent_records documents at the same time
+    query_results = await collection.find(
+        {"type": {"$in": ["settings", "sent_records"]}}
+    ).to_list(length=2)
+    
+    settings_doc = {}
+    records_doc = {}
+    for doc in query_results:
+        if doc.get("type") == "settings":
+            settings_doc = doc
+        elif doc.get("type") == "sent_records":
+            records_doc = doc.get("data", {})
+
+    # Process the results into a clean dictionary
+    data = {
+        "filters": {
+            "chatroom": settings_doc.get("spam_filter_chatroom", False),
+            "request": settings_doc.get("spam_filter_request", False),
+            "lounge": settings_doc.get("spam_filter_lounge", False),
+        },
+        "counts": {
+            "chatroom": len(records_doc.get("chatroom", [])),
+            "request": len(records_doc.get("request", [])),
+            "lounge": len(records_doc.get("lounge", [])),
+        }
+    }
+    return data
+
 async def get_spam_filter(telegram_user_id: int) -> bool:
     await _ensure_user_collection_exists(telegram_user_id)
     settings = await _get_user_collection(telegram_user_id).find_one({"type": "settings"})
@@ -299,7 +328,6 @@ async def is_already_sent(telegram_user_id, category, target_id=None, bulk=False
         records_doc = await user_db.find_one({"type": "sent_records"}, {f"data.{category}": 1})
         return set(records_doc.get("data", {}).get(category, [])) if records_doc else set()
 
-# --- START: NEW FUNCTIONS ---
 async def get_spam_record_count(telegram_user_id: int, category: str) -> int:
     """Gets the count of stored IDs for a specific spam category."""
     await _ensure_user_collection_exists(telegram_user_id)
@@ -315,7 +343,6 @@ async def clear_spam_records(telegram_user_id: int, category: str):
         {"type": "sent_records"},
         {"$set": {f"data.{category}": []}}
     )
-# --- END: NEW FUNCTIONS ---
 
 async def bulk_add_sent_ids(telegram_user_id, category, target_ids):
     if not target_ids: return
@@ -328,7 +355,7 @@ async def has_valid_access(telegram_user_id):
     return await db[collection_name].count_documents({"type": "metadata"}) > 0
 
 def get_message_delay(telegram_user_id):
-    return 2  # This function doesn't need to be async as it has no I/O
+    return 2
 
 # Functions for signup, email variations, etc., all converted
 async def add_used_email_variation(telegram_user_id, base_email, variation):
@@ -358,7 +385,7 @@ async def get_signup_config(telegram_user_id):
     doc = await _get_user_collection(telegram_user_id).find_one({"type": "signup_config"})
     return doc.get("data") if doc else None
 
-transfer_user_data = transfer_to_user # Alias
+transfer_user_data = transfer_to_user
 
 # Legacy functions converted
 async def has_interacted(telegram_user_id, action_type, user_token):
