@@ -204,15 +204,19 @@ async def send_message_to_everyone_all_tokens(
     await asyncio.sleep(1.1) # Allow for a final UI update
     ui_task.cancel()
 
-    # Final Summary
-    successful_tokens = sum(1 for s in token_status.values() if s['status'] == 'Done')
-    success_rate = (successful_tokens / len(tokens)) * 100 if tokens else 0
-    emoji = "✅" if success_rate > 90 else "⚠️" if success_rate > 70 else "❌"
-    
-    final_lines = [f"{emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} ({success_rate:.1f}%)", "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
-    for status in token_status.values():
-        name = status.get('name', 'N/A')
-        display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
-        final_lines.append(f"<pre>{display_name}│{status.get('rooms', 0):>5} │{status.get('sent', 0):>5} │{status.get('filtered', 0):>6}│{status.get('status', 'Done')}</pre>")
+   # Final Summary
+successful_tokens = sum(1 for s in token_status.values() if s['status'] == 'Done')
+# NEW: Calculate the total sent count by summing the 'sent' value from each account's status
+total_sent = sum(s.get('sent', 0) for s in token_status.values())
+success_rate = (successful_tokens / len(tokens)) * 100 if tokens else 0
+emoji = "✅" if success_rate > 90 else "⚠️" if success_rate > 70 else "❌"
+ 
+# MODIFIED: The header now shows the total sent count instead of the percentage
+final_lines = [f"{emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} (Total Sent: {total_sent})", "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
+for status in token_status.values():
+    name = status.get('name', 'N/A')
+    display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
+    # FIXED: This now shows the correct final status (e.g., 'Done' or 'Failed...')
+    final_lines.append(f"<pre>{display_name}│{status.get('rooms', 0):>5} │{status.get('sent', 0):>5} │{status.get('filtered', 0):>6}│{status.get('status', 'Error')}</pre>")
 
-    await bot.edit_message_text(chat_id=chat_id, message_id=status_message.message_id, text="\n".join(final_lines), parse_mode="HTML")
+await bot.edit_message_text(chat_id=chat_id, message_id=status_message.message_id, text="\n".join(final_lines), parse_mode="HTML")
