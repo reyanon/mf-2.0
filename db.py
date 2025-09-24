@@ -299,6 +299,24 @@ async def is_already_sent(telegram_user_id, category, target_id=None, bulk=False
         records_doc = await user_db.find_one({"type": "sent_records"}, {f"data.{category}": 1})
         return set(records_doc.get("data", {}).get(category, [])) if records_doc else set()
 
+# --- START: NEW FUNCTIONS ---
+async def get_spam_record_count(telegram_user_id: int, category: str) -> int:
+    """Gets the count of stored IDs for a specific spam category."""
+    await _ensure_user_collection_exists(telegram_user_id)
+    records_doc = await _get_user_collection(telegram_user_id).find_one({"type": "sent_records"})
+    if not records_doc or "data" not in records_doc or category not in records_doc["data"]:
+        return 0
+    return len(records_doc["data"][category])
+
+async def clear_spam_records(telegram_user_id: int, category: str):
+    """Clears all stored IDs for a specific spam category."""
+    await _ensure_user_collection_exists(telegram_user_id)
+    await _get_user_collection(telegram_user_id).update_one(
+        {"type": "sent_records"},
+        {"$set": {f"data.{category}": []}}
+    )
+# --- END: NEW FUNCTIONS ---
+
 async def bulk_add_sent_ids(telegram_user_id, category, target_ids):
     if not target_ids: return
     await _ensure_user_collection_exists(telegram_user_id)
