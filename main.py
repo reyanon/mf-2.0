@@ -16,7 +16,7 @@ from db import (
     set_user_filters, get_user_filters, get_all_user_filters, set_spam_filter, get_spam_filter,
     is_already_sent, add_sent_id, toggle_token_status, get_active_tokens,
     get_token_status, set_account_active, get_info_card,
-    set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,
+    set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,get_spam_menu_data,
     list_all_collections, get_collection_summary, connect_to_collection,
     rename_user_collection, transfer_to_user, get_current_collection_info,
     # --- START: IMPORT NEW FUNCTIONS ---
@@ -71,27 +71,26 @@ def get_unsubscribe_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Unsubscribe Current", callback_data="unsub_current"), InlineKeyboardButton(text="Unsubscribe All", callback_data="unsub_all")], [InlineKeyboardButton(text="Back", callback_data="back_to_menu")]])
 
 async def get_spam_filter_menu(user_id: int) -> InlineKeyboardMarkup:
-    spam_filters = await get_all_spam_filters(user_id)
+    # This single call now gets all the data we need, making it much faster
+    menu_data = await get_spam_menu_data(user_id)
     
-    # Fetch counts for each category
-    chatroom_count = await get_spam_record_count(user_id, "chatroom")
-    request_count = await get_spam_record_count(user_id, "request")
-    lounge_count = await get_spam_record_count(user_id, "lounge")
+    spam_filters = menu_data["filters"]
+    counts = menu_data["counts"]
 
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=f"Chatroom: {'ON' if spam_filters['chatroom'] else 'OFF'}", callback_data="toggle_spam_chatroom"),
-            InlineKeyboardButton(text=f"({chatroom_count})", callback_data="noop_count"),
+            InlineKeyboardButton(text=f"({counts['chatroom']})", callback_data="noop_count"),
             InlineKeyboardButton(text="Clear", callback_data="confirm_clear_spam_chatroom")
         ],
         [
             InlineKeyboardButton(text=f"Requests: {'ON' if spam_filters['request'] else 'OFF'}", callback_data="toggle_spam_request"),
-            InlineKeyboardButton(text=f"({request_count})", callback_data="noop_count"),
+            InlineKeyboardButton(text=f"({counts['request']})", callback_data="noop_count"),
             InlineKeyboardButton(text="Clear", callback_data="confirm_clear_spam_request")
         ],
         [
             InlineKeyboardButton(text=f"Lounge: {'ON' if spam_filters['lounge'] else 'OFF'}", callback_data="toggle_spam_lounge"),
-            InlineKeyboardButton(text=f"({lounge_count})", callback_data="noop_count"),
+            InlineKeyboardButton(text=f"({counts['lounge']})", callback_data="noop_count"),
             InlineKeyboardButton(text="Clear", callback_data="confirm_clear_spam_lounge")
         ],
         [
