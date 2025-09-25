@@ -19,6 +19,7 @@ BASE_HEADERS = {
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+
 # --- Core API Functions (with Session Management) ---
 
 async def fetch_chatrooms(session: aiohttp.ClientSession, token: str, from_date: str = None, user_id: int = None) -> tuple[List[Dict], str | None]:
@@ -53,8 +54,9 @@ async def fetch_chatrooms(session: aiohttp.ClientSession, token: str, from_date:
         logger.error(f"Error fetching chatrooms: {e}")
         return [], None
 
-async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
-    """Sends a message to a single chatroom using a provided session."""
+
+async def send_single_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
+    """Sends a single message to a chatroom using a provided session."""
     headers = BASE_HEADERS.copy()
     headers['meeff-access-token'] = token
     if user_id:
@@ -72,13 +74,34 @@ async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: 
         logger.error(f"Error sending message to {chatroom_id}: {e}")
         return False
 
+
+async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
+    """Sends message(s) to a single chatroom, splitting by comma if needed."""
+    # Split message by commas and clean up whitespace
+    message_parts = [part.strip() for part in message.split(',') if part.strip()]
+    
+    # If no commas or only one part, send as single message
+    if len(message_parts) <= 1:
+        return await send_single_message(session, token, chatroom_id, message, user_id)
+    
+    # Send each part as separate message
+    all_successful = True
+    for part in message_parts:
+        success = await send_single_message(session, token, chatroom_id, part, user_id)
+        if not success:
+            all_successful = False
+            # Continue sending other parts even if one fails
+    
+    return all_successful
+
+
 # --- Processing Logic ---
 
 async def process_chatroom_batch(
-    session: aiohttp.ClientSession, token: str, rooms: List[Dict], messages: List[str],
+    session: aiohttp.ClientSession, token: str, rooms: List[Dict], message: str,
     chat_id: int, spam_enabled: bool, sent_ids: Set[str], sent_ids_lock: asyncio.Lock, user_id: int = None
 ) -> tuple[int, int, int]:
-    """Processes a batch of chatrooms, sending multiple messages sequentially to each."""
+    """Processes a batch of chatrooms concurrently."""
     filtered_rooms = []
     if spam_enabled:
         async with sent_ids_lock:
@@ -88,25 +111,26 @@ async def process_chatroom_batch(
     else:
         filtered_rooms = rooms
 
-    sent_count = 0
-    for room in filtered_rooms:
-        for message in messages:
-            success = await send_message(session, token, room.get('_id'), message, user_id)
-            if success:
-                sent_count += 1
-                if spam_enabled:
-                    async with sent_ids_lock:
-                        sent_ids.add(room.get('_id'))
-                    await bulk_add_sent_ids(chat_id, "chatroom", [room.get('_id')])
+    tasks = [send_message(session, token, room.get('_id'), message, user_id) for room in filtered_rooms]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
+    successful_sends = [room.get('_id') for room, result in zip(filtered_rooms, results) if result is True]
+    
+    if spam_enabled and successful_sends:
+        async with sent_ids_lock:
+            sent_ids.update(successful_sends)
+        await bulk_add_sent_ids(chat_id, "chatroom", successful_sends)
+        
+    sent_count = len(successful_sends)
     filtered_count = len(rooms) - len(filtered_rooms)
     return len(rooms), sent_count, filtered_count
 
+
 async def send_message_to_everyone(
-    token: str, messages: List[str], chat_id: int, spam_enabled: bool, user_id: int,
+    token: str, message: str, chat_id: int, spam_enabled: bool, user_id: int,
     sent_ids: Set[str], sent_ids_lock: asyncio.Lock, status_entry: Dict = None
 ) -> tuple[int, int, int]:
-    """Main logic for sending multiple messages for a single token."""
+    """Main logic for sending messages for a single token."""
     total_rooms, sent_count, filtered_count = 0, 0, 0
     from_date = None
     
@@ -117,7 +141,7 @@ async def send_message_to_everyone(
                 break
 
             batch_total, batch_sent, batch_filtered = await process_chatroom_batch(
-                session, token, rooms, messages, chat_id, spam_enabled, sent_ids, sent_ids_lock, user_id
+                session, token, rooms, message, chat_id, spam_enabled, sent_ids, sent_ids_lock, user_id
             )
             total_rooms += batch_total
             sent_count += batch_sent
@@ -132,14 +156,15 @@ async def send_message_to_everyone(
             
     return total_rooms, sent_count, filtered_count
 
+
 # --- AIO (All-In-One) Function for Multiple Tokens ---
 
 async def send_message_to_everyone_all_tokens(
-    tokens: List[str], messages: List[str], status_message: types.Message, bot: Bot,
+    tokens: List[str], message: str, status_message: types.Message, bot: Bot,
     chat_id: int, spam_enabled: bool, token_names: Dict[str, str],
     use_in_memory_deduplication: bool, user_id: int
 ) -> None:
-    """Sends multiple messages for multiple tokens concurrently with a reliable UI."""
+    """Sends messages for multiple tokens concurrently with a reliable UI."""
     token_status = {}
     
     # Shared state for all workers to prevent race conditions
@@ -154,7 +179,7 @@ async def send_message_to_everyone_all_tokens(
 
         try:
             await send_message_to_everyone(
-                token, messages, chat_id, spam_enabled, user_id,
+                token, message, chat_id, spam_enabled, user_id,
                 sent_ids, sent_ids_lock, status_entry
             )
             status_entry['status'] = "Done"
@@ -165,7 +190,13 @@ async def send_message_to_everyone_all_tokens(
     async def _refresh_ui():
         last_message = ""
         while running:
-            lines = ["🔄 <b>Chatroom AIO Status</b>", "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
+            # Show message parts count in the header if comma-separated
+            message_parts = [part.strip() for part in message.split(',') if part.strip()]
+            header = "🔄 <b>Chatroom AIO Status</b>"
+            if len(message_parts) > 1:
+                header += f" ({len(message_parts)} messages per room)"
+            
+            lines = [header, "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
             for status in token_status.values():
                 name = status.get('name', 'N/A')
                 display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
@@ -204,7 +235,13 @@ async def send_message_to_everyone_all_tokens(
     success_rate = (successful_tokens / len(tokens)) * 100 if tokens else 0
     emoji = "✅" if success_rate > 90 else "⚠️" if success_rate > 70 else "❌"
     
-    final_lines = [f"{emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} ({success_rate:.1f}%)", "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
+    # Show message parts count in final summary
+    message_parts = [part.strip() for part in message.split(',') if part.strip()]
+    header = f"{emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} ({success_rate:.1f}%)"
+    if len(message_parts) > 1:
+        header += f" ({len(message_parts)} messages per room)"
+    
+    final_lines = [header, "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
     for status in token_status.values():
         name = status.get('name', 'N/A')
         display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
