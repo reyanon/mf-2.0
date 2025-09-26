@@ -201,16 +201,16 @@ async def send_lounge_all_tokens(
     lock = asyncio.Lock()
     running = True
 
-    async def _worker(token_data: Dict):
+   async def _worker(token_data: Dict):
         token = token_data.get("token")
         
         async with aiohttp.ClientSession() as session:
-            # NEW: Start a loop for this specific worker/token.
+            # Loop for this specific worker/token.
             while True:
                 token_status[token]["status"] = "Fetching"
                 users = await fetch_lounge_users(session, token, user_id)
                 
-                # NEW: If no users are found, this worker's job is done. Break the loop.
+                # If no users are found from the API, this worker's job is done.
                 if not users:
                     # If it never sent anything, mark as 'No users', otherwise 'Done'.
                     if token_status[token]["sent"] == 0:
@@ -226,17 +226,26 @@ async def send_lounge_all_tokens(
                     session, token, users, message, sent_ids, processing_ids, lock, user_id
                 )
 
-                # NEW: Update the token's specific stats in the shared dictionary.
+                # Update the token's specific stats in the shared dictionary.
                 token_status[token]["sent"] += batch_sent
                 token_status[token]["filtered"] += batch_filtered
 
-                # NEW: Update the global 'sent_ids' set under a lock to prevent race conditions.
+                # Update the global 'sent_ids' set under a lock.
                 async with lock:
                     sent_ids.update(successful_ids)
                     if spam_enabled and successful_ids:
                         await bulk_add_sent_ids(chat_id, "lounge", successful_ids)
                 
-                # NEW: Short delay before the next fetch for this token.
+
+                if users and batch_sent == 0:
+                    # If it never sent anything, mark as 'No users', otherwise 'Done'.
+                    if token_status[token]["sent"] == 0:
+                        token_status[token]["status"] = "No users"
+                    else:
+                        token_status[token]["status"] = "Done"
+                    break # Exit the while True loop for this account.
+                
+                # Short delay before the next fetch for this token.
                 await asyncio.sleep(2)
 
     async def _refresh_ui():
