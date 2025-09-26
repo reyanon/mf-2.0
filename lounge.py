@@ -205,7 +205,7 @@ async def send_lounge_all_tokens(
         token = token_data.get("token")
         
         async with aiohttp.ClientSession() as session:
-            # Loop for this specific worker/token.
+            # Loop for this specific worker/token
             while True:
                 token_status[token]["status"] = "Fetching"
                 users = await fetch_lounge_users(session, token, user_id)
@@ -216,7 +216,7 @@ async def send_lounge_all_tokens(
                         token_status[token]["status"] = "No users"
                     else:
                         token_status[token]["status"] = "Done"
-                    break # Exit the loop for this worker.
+                    break # Exit the loop for this worker
 
                 token_status[token]["status"] = "Processing"
                 
@@ -232,7 +232,7 @@ async def send_lounge_all_tokens(
                     if spam_enabled and successful_ids:
                         await bulk_add_sent_ids(chat_id, "lounge", successful_ids)
                 
-                # FIXED: Check if the job is done for this batch.
+                # FIX #1: This check stops the infinite loop once all users are processed.
                 if users and batch_sent == 0:
                     if token_status[token]["sent"] == 0:
                         token_status[token]["status"] = "No users"
@@ -262,18 +262,21 @@ async def send_lounge_all_tokens(
                 except Exception as e:
                     if "message is not modified" not in str(e):
                         logger.error(f"UI refresh error: {e}")
-            await asyncio.sleep(1)
+            
+            # FIX #2: Slower refresh rate to avoid Telegram flood errors.
+            await asyncio.sleep(3)
 
     ui_task = asyncio.create_task(_refresh_ui())
     worker_tasks = [asyncio.create_task(_worker(td)) for td in tokens_data]
     await asyncio.gather(*worker_tasks, return_exceptions=True)
 
     running = False
-    await asyncio.sleep(1.1)
+    await asyncio.sleep(1.1) # Wait a moment for the UI task to stop
     ui_task.cancel()
 
     total_sent = sum(s["sent"] for s in token_status.values())
     
+    # Final status update after everything is complete
     final_lines = [f"✅ <b>AIO Lounge Completed</b> (Total Sent: {total_sent})", "<pre>Account   | Sent | Filtered | State</pre>"]
     for status in token_status.values():
         name = status['name']
