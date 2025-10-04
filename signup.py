@@ -91,8 +91,9 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🇫🇷 FR", callback_data="signup_filter_nationality_FR")
     ],
     [
-        InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"),
-        InlineKeyboardButton(text="🇨🇳 CN", callback.data="signup_filter_nationality_CN"),
+        # FIX APPLIED HERE: changed 'callback.data' to 'callback_data'
+        InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"), 
+        InlineKeyboardButton(text="🇨🇳 CN", callback_data="signup_filter_nationality_CN"),
         InlineKeyboardButton(text="🇯🇵 JP", callback_data="signup_filter_nationality_JP"),
         InlineKeyboardButton(text="🇰🇷 KR", callback_data="signup_filter_nationality_KR"),
         InlineKeyboardButton(text="🇨🇦 CA", callback_data="signup_filter_nationality_CA")
@@ -106,7 +107,6 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
     ],
     [InlineKeyboardButton(text="Back", callback_data="signup_photos_done")]
 ])
-
 
 def format_user_with_nationality(user: Dict) -> str:
     """Format user information into a displayable string with nationality and last active time."""
