@@ -55,8 +55,8 @@ async def fetch_chatrooms(session: aiohttp.ClientSession, token: str, from_date:
         return [], None
 
 
-async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
-    """Sends a message to a single chatroom using a provided session."""
+async def send_single_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
+    """Sends a single message to a chatroom using a provided session."""
     headers = BASE_HEADERS.copy()
     headers['meeff-access-token'] = token
     if user_id:
@@ -73,6 +73,26 @@ async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: 
     except Exception as e:
         logger.error(f"Error sending message to {chatroom_id}: {e}")
         return False
+
+
+async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
+    """Sends message(s) to a single chatroom, splitting by comma if needed."""
+    # Split message by commas and clean up whitespace
+    message_parts = [part.strip() for part in message.split(',') if part.strip()]
+    
+    # If no commas or only one part, send as single message
+    if len(message_parts) <= 1:
+        return await send_single_message(session, token, chatroom_id, message, user_id)
+    
+    # Send each part as separate message
+    all_successful = True
+    for part in message_parts:
+        success = await send_single_message(session, token, chatroom_id, part, user_id)
+        if not success:
+            all_successful = False
+            # Continue sending other parts even if one fails
+    
+    return all_successful
 
 
 # --- Processing Logic ---
@@ -170,7 +190,13 @@ async def send_message_to_everyone_all_tokens(
     async def _refresh_ui():
         last_message = ""
         while running:
-            lines = ["🔄 <b>Chatroom AIO Status</b>", "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
+            # Show message parts count in the header if comma-separated
+            message_parts = [part.strip() for part in message.split(',') if part.strip()]
+            header = "🔄 <b>Chatroom AIO Status</b>"
+            if len(message_parts) > 1:
+                header += f" ({len(message_parts)} messages per room)"
+            
+            lines = [header, "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
             for status in token_status.values():
                 name = status.get('name', 'N/A')
                 display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'
@@ -209,7 +235,13 @@ async def send_message_to_everyone_all_tokens(
     success_rate = (successful_tokens / len(tokens)) * 100 if tokens else 0
     emoji = "✅" if success_rate > 90 else "⚠️" if success_rate > 70 else "❌"
     
-    final_lines = [f"{emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} ({success_rate:.1f}%)", "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
+    # Show message parts count in final summary
+    message_parts = [part.strip() for part in message.split(',') if part.strip()]
+    header = f"{emoji} <b>Chatroom AIO Completed</b> - {successful_tokens}/{len(tokens)} ({success_rate:.1f}%)"
+    if len(message_parts) > 1:
+        header += f" ({len(message_parts)} messages per room)"
+    
+    final_lines = [header, "<pre>Account   │Rooms │Sent  │Filter│Status</pre>"]
     for status in token_status.values():
         name = status.get('name', 'N/A')
         display_name = name[:10].ljust(10) if len(name) <= 10 else name[:9] + '…'

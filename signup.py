@@ -3,6 +3,7 @@ import json
 import random
 import itertools
 import logging
+import asyncio 
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -14,7 +15,7 @@ from filters import get_nationality_keyboard
 # Logging configuration
 logger = logging.getLogger(__name__)
 
-# Configuration constants
+# Configuration constants (omitted for brevity)
 DEFAULT_BIOS = [
     "Love traveling and meeting new people!",
     "Coffee lover and adventure seeker",
@@ -32,7 +33,7 @@ DEFAULT_PHOTOS = (
 # Global state
 user_signup_states: Dict[int, Dict] = {}
 
-# Inline Keyboard Menus
+# Inline Keyboard Menus (omitted for brevity)
 SIGNUP_MENU = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text="Sign Up", callback_data="signup_go"),
@@ -67,10 +68,9 @@ DONE_PHOTOS = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
 ])
 
-CONFIG_MENU = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="Change Email", callback_data="change_email")],
+CONFIG_MENU_REVISED = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Auto Signup: Turn OFF", callback_data="toggle_auto_signup")],
-    [InlineKeyboardButton(text="Setup Signup Details", callback_data="setup_signup_config")],
+    [InlineKeyboardButton(text="Setup/Change Signup Details", callback_data="setup_signup_config")],
     [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
 ])
 
@@ -91,7 +91,8 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🇫🇷 FR", callback_data="signup_filter_nationality_FR")
     ],
     [
-        InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"),
+        # FIX APPLIED HERE: changed 'callback.data' to 'callback_data'
+        InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"), 
         InlineKeyboardButton(text="🇨🇳 CN", callback_data="signup_filter_nationality_CN"),
         InlineKeyboardButton(text="🇯🇵 JP", callback_data="signup_filter_nationality_JP"),
         InlineKeyboardButton(text="🇰🇷 KR", callback_data="signup_filter_nationality_KR"),
@@ -158,21 +159,28 @@ def format_user_with_nationality(user: Dict) -> str:
     
     return card
 
-def generate_email_variations(base_email: str, count: int = 50) -> List[str]:
+def generate_email_variations(base_email: str, count: int = 1000) -> List[str]:
     """Generate variations of an email address by adding dots to the username."""
     if '@' not in base_email:
         return []
     username, domain = base_email.split('@', 1)
     variations = {base_email}
-    for i in range(1, len(username)):
+    
+    # Restrict max dots to prevent combinatorial explosion for long usernames
+    max_dots = min(4, len(username) - 1)
+    
+    # Generate variations using dots
+    for i in range(1, max_dots + 1):
         for positions in itertools.combinations(range(1, len(username)), i):
             if len(variations) >= count:
                 return list(variations)
             new_username = list(username)
+            # Insert dots starting from the end to keep indices correct
             for pos in reversed(positions):
                 new_username.insert(pos, '.')
             variations.add(''.join(new_username) + '@' + domain)
-    return list(variations)
+            
+    return list(variations)[:count]
 
 def get_random_bio() -> str:
     """Return a random bio from the default bios list."""
@@ -187,6 +195,7 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
         'Accept-Encoding': "gzip",
         'Content-Type': "application/json; charset=utf-8"
     }
+    
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -198,30 +207,76 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
             logger.error(f"Error checking email {email}: {e}")
             return False, "Failed to check email availability."
 
-async def select_available_emails(base_email: str, num_accounts: int, pending_emails: List[str]) -> List[str]:
-    """Select available email variations, prioritizing pending emails."""
+async def select_available_emails(base_email: str, num_accounts: int, pending_emails: List[str], used_emails: List[str]) -> List[str]:
+    """
+    Select available email variations, prioritizing pending emails and excluding
+    emails known to be in use.
+    """
     available_emails = []
-    # First, check pending emails for availability
-    for email in pending_emails:
-        if len(available_emails) >= num_accounts:
-            break
-        is_available, _ = await check_email_exists(email)
-        if is_available:
-            available_emails.append(email)
     
-    # If more emails are needed, generate new variations
-    if len(available_emails) < num_accounts:
-        email_variations = generate_email_variations(base_email, num_accounts * 10)
-        # Exclude pending emails to avoid duplicates
-        email_variations = [e for e in email_variations if e not in pending_emails]
-        for email in email_variations:
-            if len(available_emails) >= num_accounts:
-                break
-            is_available, _ = await check_email_exists(email)
-            if is_available:
+    # Emails that failed the availability check or sign-up (known to be used)
+    used_emails_set = set(used_emails)
+    
+    # --- Check pending emails (that are not known to be used) ---
+    pending_to_check = [e for e in pending_emails if e not in used_emails_set]
+    pending_check_tasks = []
+    for email in pending_to_check:
+        pending_check_tasks.append((email, check_email_exists(email)))
+
+    # Execute pending checks concurrently
+    if pending_check_tasks:
+        pending_results = await asyncio.gather(*[task for email, task in pending_check_tasks])
+        for i, result in enumerate(pending_results):
+            email, _ = pending_check_tasks[i]
+            is_available, _ = result
+            if is_available and len(available_emails) < num_accounts:
                 available_emails.append(email)
+
+    # --- Check new variations if needed ---
+    if len(available_emails) < num_accounts:
+        # Generate enough variations to check
+        email_variations = generate_email_variations(base_email, num_accounts * 10)
+        
+        # Exclude: 1. Already available, 2. Pending, 3. Known Used
+        new_variations = [
+            e for e in email_variations 
+            if e not in pending_emails and e not in available_emails and e not in used_emails_set
+        ]
+        
+        new_check_tasks = []
+        for email in new_variations:
+            new_check_tasks.append((email, check_email_exists(email)))
+        
+        # Execute new checks concurrently
+        if new_check_tasks:
+            new_results = await asyncio.gather(*[task for email, task in new_check_tasks])
+
+            for i, result in enumerate(new_results):
+                email, availability_error = new_check_tasks[i]
+                is_available, _ = result
+                
+                if is_available and len(available_emails) < num_accounts:
+                    available_emails.append(email)
     
     return available_emails
+
+def get_available_variation_count(base_email: Optional[str], used_emails: List[str]) -> Tuple[int, int]:
+    """
+    Calculates the total number of POTENTIAL variations and the number of 
+    VARIATIONS AVAILABLE (Total - Used).
+    """
+    if not base_email:
+        return 0, 0
+    
+    # Get all potential variations (up to 1000)
+    all_variations = generate_email_variations(base_email, count=1000) 
+    total_variations = len(all_variations)
+    
+    # Filter out emails known to be used
+    used_emails_set = set(used_emails)
+    available_variations = [e for e in all_variations if e not in used_emails_set]
+    
+    return total_variations, len(available_variations)
 
 async def show_signup_preview(message: Message, user_id: int, state: Dict) -> None:
     """Show a preview of the signup configuration with exact emails to be used."""
@@ -233,12 +288,23 @@ async def show_signup_preview(message: Message, user_id: int, state: Dict) -> No
             parse_mode="HTML"
         )
         return
+    # Temporarily update message while running concurrent checks
+    await message.edit_text("<b>Checking email availability concurrently...</b> This may take a moment.")
+    
     num_accounts = state.get('num_accounts', 1)
     pending_emails = [acc['email'] for acc in state.get('pending_accounts', [])]
-    available_emails = await select_available_emails(config.get("email", ""), num_accounts, pending_emails)
-    state["selected_emails"] = available_emails  # Store selected emails for creation
+    used_emails = config.get("used_emails", []) 
+    
+    available_emails = await select_available_emails(
+        config.get("email", ""), 
+        num_accounts, 
+        pending_emails, 
+        used_emails 
+    )
+    
+    state["selected_emails"] = available_emails
     filter_nat = state.get('filter_nationality', 'All Countries')
-    email_list = '\n'.join([f"{i+1}. {email}{' (Pending)' if email in pending_emails else ''}" for i, email in enumerate(available_emails)]) if available_emails else "No available emails found!"
+    email_list = '\n'.join([f"{i+1}. <code>{email}</code>{' (Pending)' if email in pending_emails else ''}" for i, email in enumerate(available_emails)]) if available_emails else "No available emails found!"
     preview_text = (
         f"<b>Signup Preview</b>\n\n"
         f"<b>Name:</b> {state.get('name', 'N/A')}\n"
@@ -264,9 +330,22 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     user_id = message.chat.id
     config = await get_signup_config(user_id) or {}
     auto_signup_status = config.get('auto_signup', False)
+    base_email = config.get('email')
+    
+    # --- NEW LOGIC FOR CONFIG DISPLAY ---
+    used_emails = config.get("used_emails", [])
+    total_variations, available_count = get_available_variation_count(base_email, used_emails)
+    used_count = len(used_emails)
+    
+    email_status_text = f"<b>Base Email:</b> <code>{base_email or 'Not set'}</code>\n"
+    if base_email:
+        email_status_text += f"<b>Available Variations:</b> {available_count} of {total_variations} total\n"
+        email_status_text += f"<b>Used/Unavailable Emails:</b> {used_count}"
+    # ------------------------------------
+    
     config_text = (
-        "<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
-        f"<b>Email:</b> <code>{config.get('email', 'Not set')}</code>\n"
+        f"<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
+        f"{email_status_text}\n" 
         f"<b>Password:</b> <code>{'*' * len(config.get('password', '')) if config.get('password') else 'Not set'}</code>\n"
         f"<b>Gender:</b> {config.get('gender', 'Not set')}\n"
         f"<b>Birth Year:</b> {config.get('birth_year', 'Not set')}\n"
@@ -275,9 +354,8 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
         "Turn <b>Auto Signup ON</b> to use these settings automatically."
     )
     menu = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Change Email", callback_data="change_email")],
         [InlineKeyboardButton(text=f"Auto Signup: {'Turn OFF' if auto_signup_status else 'Turn ON'}", callback_data="toggle_auto_signup")],
-        [InlineKeyboardButton(text="Setup Signup Details", callback_data="setup_signup_config")],
+        [InlineKeyboardButton(text="Setup/Change Signup Details", callback_data="setup_signup_config")],
         [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
     ])
     try:
@@ -305,14 +383,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
 
     if data == "signup_settings":
         await signup_settings_command(callback.message, is_callback=True)
-    elif data == "change_email":
-        state["stage"] = "config_email"
-        user_signup_states[user_id] = state
-        await callback.message.edit_text(
-            "<b>Change Email</b>\n\nEnter your new base Gmail address (e.g., yourname@gmail.com).",
-            reply_markup=BACK_TO_CONFIG,
-            parse_mode="HTML"
-        )
     elif data == "toggle_auto_signup":
         config = await get_signup_config(user_id) or {}
         config['auto_signup'] = not config.get('auto_signup', False)
@@ -320,10 +390,11 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         await callback.answer(f"Auto Signup turned {'ON' if config['auto_signup'] else 'OFF'}")
         await signup_settings_command(callback.message, is_callback=True)
     elif data == "setup_signup_config":
+        # Start configuration process, beginning with the email
         state["stage"] = "config_email"
         user_signup_states[user_id] = state
         await callback.message.edit_text(
-            "<b>Setup Email</b>\n\nEnter your base Gmail address (e.g., yourname@gmail.com).",
+            "<b>Setup Email</b>\n\nEnter your base Gmail address (e.g., yourname@gmail.com). This will be used to generate dot variations for multiple accounts.",
             reply_markup=BACK_TO_CONFIG,
             parse_mode="HTML"
         )
@@ -339,7 +410,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             state["stage"] = "ask_num_accounts"
             user_signup_states[user_id] = state
             await callback.message.edit_text(
-                "<b>Account Creation</b>\n\nEnter the number of accounts to create (1-10):",
+                "<b>Account Creation</b>\n\nEnter the number of accounts to create (1-30):",
                 reply_markup=BACK_TO_SIGNUP,
                 parse_mode="HTML"
             )
@@ -355,10 +426,14 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         state["filter_nationality"] = code if code != "all" else ""
         await show_signup_preview(callback.message, user_id, state)
     elif data == "create_accounts_confirm":
-        await callback.message.edit_text("<b>Creating Accounts</b>...", parse_mode="HTML")
+        # 1. Immediately update the message to acknowledge the command
+        await callback.message.edit_text("<b>Creating Accounts Concurrently...</b>", parse_mode="HTML")
+        
         config = await get_signup_config(user_id) or {}
         num_accounts = state.get("num_accounts", 1)
         selected_emails = state.get("selected_emails", [])
+        used_emails = set(config.get("used_emails", [])) # Set for fast lookups
+        
         if not selected_emails:
             await callback.message.edit_text(
                 "<b>No Available Emails</b>\n\nNo valid email variations found. Please try a different base email in Signup Config.",
@@ -366,7 +441,10 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 parse_mode="HTML"
             )
             return True
-        created_accounts = []
+        
+        # Prepare concurrent tasks
+        signup_tasks = []
+        accounts_to_create = []
         for email in selected_emails[:num_accounts]:
             acc_state = {
                 "email": email,
@@ -378,16 +456,41 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 "birth_year": config.get("birth_year", 2000),
                 "nationality": config.get("nationality", "US")
             }
-            res = await try_signup(acc_state, user_id)
+            # Only run sign-up if the email is not already marked as used (in case of a race condition)
+            if email not in used_emails:
+                signup_tasks.append(try_signup(acc_state, user_id)) 
+                accounts_to_create.append(acc_state)
+            
+        # Execute tasks concurrently
+        results = await asyncio.gather(*signup_tasks)
+        
+        # Process results
+        created_accounts = []
+        for i, res in enumerate(results):
+            acc_state = accounts_to_create[i]
             if res.get("user", {}).get("_id"):
+                # SUCCESS
                 created_accounts.append({
-                    "email": email,
+                    "email": acc_state["email"],
                     "name": acc_state["name"],
                     "password": config.get("password")
                 })
+            elif "email address is already in use" in res.get("errorMessage", "").lower():
+                # FAILURE: Mark this email as used
+                used_emails.add(acc_state["email"])
+            else:
+                # FAILURE: Other errors (e.g., connection, bad data)
+                logger.error(f"Sign-up failed for {acc_state['email']} with unknown error: {res.get('errorMessage', 'N/A')}")
+        
+        # --- CRITICAL: Update the used_emails list in the config DB ---
+        if used_emails:
+            config['used_emails'] = list(used_emails)
+            await set_signup_config(user_id, config)
+        
         state["created_accounts"] = created_accounts
         state["verified_accounts"] = []
         state["pending_accounts"] = created_accounts.copy()
+        
         result_text = (
             f"<b>Account Creation Results</b>\n\n<b>Created:</b> {len(created_accounts)} account{'s' if len(created_accounts) != 1 else ''}\n\n"
         )
@@ -395,12 +498,19 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             result_text += "<b>Created Accounts:</b>\n" + '\n'.join([
                 f"• {a['name']} - <code>{a['email']}</code>" for a in created_accounts
             ])
+        
+        if len(selected_emails) > len(created_accounts):
+             result_text += "\n\n⚠️ Some emails were already in use and have been skipped for future runs."
+             
         result_text += "\n\nPlease verify all emails, then click the button below."
+        
+        # Final response, well within the timeout
         await callback.message.edit_text(
             result_text,
             reply_markup=VERIFY_ALL_BUTTON,
             parse_mode="HTML"
         )
+
     elif data == "verify_accounts" or data == "retry_pending":
         pending = state.get("pending_accounts", [])
         if not pending:
@@ -410,16 +520,34 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 parse_mode="HTML"
             )
             return True
-        await callback.message.edit_text("<b>Verifying Accounts</b>...", parse_mode="HTML")
+            
+        await callback.message.edit_text("<b>Verifying Accounts Concurrently...</b>", parse_mode="HTML")
+        
         verified = state.get("verified_accounts", [])
-        new_pending = []
         filter_nat = state.get("filter_nationality", "")
+        
+        # Prepare concurrent sign-in tasks
+        signin_tasks = []
         for acc in pending:
-            res = await try_signin(acc["email"], acc["password"], user_id)
+            # The try_signin function contains throttling logic
+            task = try_signin(acc["email"], acc["password"], user_id) 
+            signin_tasks.append(task)
+            
+        # Execute all sign-in tasks concurrently
+        results = await asyncio.gather(*signin_tasks)
+        
+        new_pending = []
+        
+        # Process results
+        for i, res in enumerate(results):
+            acc = pending[i]
             if res.get("accessToken") and res.get("user"):
                 token = res["accessToken"]
+                
+                # DB operations remain sequential to ensure atomic updates per account
                 await set_token(user_id, token, acc["name"], acc["email"])
                 await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
+                
                 res["user"].update({
                     "email": acc["email"],
                     "password": acc["password"],
@@ -429,8 +557,11 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 verified.append(acc)
             else:
                 new_pending.append(acc)
+                
         state["verified_accounts"] = verified
         state["pending_accounts"] = new_pending
+        
+        # Final results message
         if not new_pending:
             result_text = (
                 f"<b>Verification Results</b>\n\n"
@@ -441,16 +572,19 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         else:
             result_text = (
                 f"<b>Verification Results</b>\n\n"
+                f"<b>Verified:</b> {len(verified)} account{'s' if len(verified) != 1 else ''}\n"
                 f"<b>Pending Verification:</b> {len(new_pending)} account{'s' if len(new_pending) != 1 else ''}\n\n"
                 "<b>Pending Accounts:</b>\n" + '\n'.join([f"• <code>{a['email']}</code>" for a in new_pending]) +
                 "\n\nPlease verify these emails, then retry."
             )
             reply_markup = RETRY_VERIFY_BUTTON
+            
         await callback.message.edit_text(
             result_text,
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
+
     elif data == "signup_menu":
         state["stage"] = "menu"
         await callback.message.edit_text(
@@ -489,6 +623,8 @@ async def signup_message_handler(message: Message) -> bool:
                 await message.answer("Invalid Email. Please try again:", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
                 return True
             config["email"] = text
+            # Clear used emails when changing the base email
+            config["used_emails"] = [] 
             state["stage"] = "config_password"
             await message.answer("<b>Setup Password</b>\nEnter the password:", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
         elif stage == "config_password":
@@ -566,6 +702,8 @@ async def signup_message_handler(message: Message) -> bool:
             # Delete the previous photo message to keep the chat clean
             if state.get("last_photo_message_id"):
                 try:
+                    # Note: message.bot requires an aiogram Bot instance, which is typical
+                    # but ensure your environment provides this context if running standalone.
                     await message.bot.delete_message(chat_id=user_id, message_id=state["last_photo_message_id"])
                 except Exception as e:
                     logger.warning(f"Failed to delete previous photo message: {e}")
@@ -588,6 +726,7 @@ async def signup_message_handler(message: Message) -> bool:
         )
     elif stage == "signin_password":
         msg = await message.answer("<b>Signing In</b>...", parse_mode="HTML")
+        # try_signin will generate/get device_info for this specific email
         res = await try_signin(state["signin_email"], text, user_id)
         if res.get("accessToken") and res.get("user"):
             creds = {"email": state["signin_email"], "password": text}
@@ -609,6 +748,7 @@ async def signup_message_handler(message: Message) -> bool:
 async def upload_tg_photo(message: Message) -> Optional[str]:
     """Upload a Telegram photo to Meeff's server."""
     try:
+        # Assuming message.bot is correctly configured in the bot environment
         file = await message.bot.get_file(message.photo[-1].file_id)
         file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
         async with aiohttp.ClientSession() as session:
@@ -660,7 +800,12 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
         return None
 
 async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
-    """Attempt to sign up a new user, using device info from the DB."""
+    """
+    Attempt to sign up a new user with **throttling and robust error capture**.
+    """
+    # CRITICAL: Introduce a randomized delay for throttling
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+    
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
     logger.warning(f"SIGN UP using Device ID: {device_info.get('device_unique_id')} for email {state['email']}")
@@ -688,13 +833,30 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
+                if response.status != 200:
+                    try:
+                        resp_json = await response.json()
+                        logger.error(f"Signup failed for {state['email']}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
+                        return resp_json
+                    except aiohttp.ContentTypeError:
+                        # Handle non-JSON error response (e.g., API dropping the connection)
+                        error_text = await response.text()
+                        logger.error(f"Signup failed for {state['email']}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
+                        return {"errorMessage": f"API Rejected Signup (Status {response.status}). Check full logs."}
+                
                 return await response.json()
+                
     except Exception as e:
-        logger.error(f"Error during signup: {e}")
-        return {"errorMessage": "Failed to register account."}
+        logger.error(f"Error during signup for {state['email']}: {e}")
+        return {"errorMessage": "Failed to register account due to connection error."}
 
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
-    """Attempt to sign in, using device info from the DB."""
+    """
+    Attempt to sign in with **throttling and robust error capture**.
+    """
+    # CRITICAL: Introduce a randomized delay for throttling
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+    
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
@@ -704,13 +866,21 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
-                resp_json = await response.json()
                 if response.status != 200:
-                    logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
-                return resp_json
+                    try:
+                        resp_json = await response.json()
+                        logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
+                        return resp_json
+                    except aiohttp.ContentTypeError:
+                        # Handle non-JSON error response
+                        error_text = await response.text()
+                        logger.error(f"Signin failed for {email}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
+                        return {"errorMessage": f"API Rejected Signin (Status {response.status}). Check full logs."}
+
+                return await response.json()
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
-        return {"errorMessage": "Failed to sign in."}
+        return {"errorMessage": "Failed to sign in due to connection error."}
 
 async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict) -> None:
     """Store the access token and display the user card."""

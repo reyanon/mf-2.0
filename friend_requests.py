@@ -249,14 +249,21 @@ async def run_requests(user_id, bot, target_channel_id):
     await bot.send_message(user_id, f"✅ {status}! Total Added: {state.get('total_added_friends', 0)}")
 
 
-async def process_all_tokens(user_id, tokens, bot, target_channel_id):
+async def process_all_tokens(user_id, tokens, bot, target_channel_id, initial_status_message=None):
     """Process friend requests for all tokens concurrently with a shared spam filter list."""
     state = user_states[user_id]
     state.update({"total_added_friends": 0, "running": True, "stopped": False})
 
-    status_message = await bot.send_message(chat_id=user_id, text="🔄 <b>AIO Starting...</b>", parse_mode="HTML", reply_markup=stop_markup)
+    # --- FIX: Use the message from main.py instead of creating a new one ---
+    if not initial_status_message:
+        # Fallback in case it's called directly without a message
+        status_message = await bot.send_message(chat_id=user_id, text="🔄 <b>AIO Starting...</b>", parse_mode="HTML", reply_markup=stop_markup)
+    else:
+        status_message = initial_status_message
+
     state["status_message_id"] = status_message.message_id
     try:
+        # Pin the one and only status message
         await bot.pin_chat_message(chat_id=user_id, message_id=status_message.message_id, disable_notification=True)
         state["pinned_message_id"] = status_message.message_id
     except Exception as e:
