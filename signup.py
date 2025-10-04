@@ -3,6 +3,7 @@ import json
 import random
 import itertools
 import logging
+import asyncio # <-- NEW: Import for concurrent execution
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -289,7 +290,7 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     
     config_text = (
         f"<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
-        f"{email_status_text}\n" # Updated to show total count
+        f"{email_status_text}\n" 
         f"<b>Password:</b> <code>{'*' * len(config.get('password', '')) if config.get('password') else 'Not set'}</code>\n"
         f"<b>Gender:</b> {config.get('gender', 'Not set')}\n"
         f"<b>Birth Year:</b> {config.get('birth_year', 'Not set')}\n"
@@ -370,10 +371,13 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         state["filter_nationality"] = code if code != "all" else ""
         await show_signup_preview(callback.message, user_id, state)
     elif data == "create_accounts_confirm":
-        await callback.message.edit_text("<b>Creating Accounts</b>...", parse_mode="HTML")
+        # 1. Immediately update the message to acknowledge the command
+        await callback.message.edit_text("<b>Creating Accounts Concurrently...</b>", parse_mode="HTML")
+        
         config = await get_signup_config(user_id) or {}
         num_accounts = state.get("num_accounts", 1)
         selected_emails = state.get("selected_emails", [])
+        
         if not selected_emails:
             await callback.message.edit_text(
                 "<b>No Available Emails</b>\n\nNo valid email variations found. Please try a different base email in Signup Config.",
@@ -381,8 +385,10 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 parse_mode="HTML"
             )
             return True
-        created_accounts = []
-        # Use a list of emails up to the requested number of accounts
+        
+        # Prepare concurrent tasks
+        signup_tasks = []
+        accounts_to_create = []
         for email in selected_emails[:num_accounts]:
             acc_state = {
                 "email": email,
@@ -394,17 +400,27 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 "birth_year": config.get("birth_year", 2000),
                 "nationality": config.get("nationality", "US")
             }
-            # try_signup will generate/get device_info for this specific email
-            res = await try_signup(acc_state, user_id)
+            signup_tasks.append(try_signup(acc_state, user_id))
+            accounts_to_create.append(acc_state)
+            
+        # Execute tasks concurrently
+        results = await asyncio.gather(*signup_tasks)
+        
+        # Process results
+        created_accounts = []
+        for i, res in enumerate(results):
             if res.get("user", {}).get("_id"):
+                acc_state = accounts_to_create[i]
                 created_accounts.append({
-                    "email": email,
+                    "email": acc_state["email"],
                     "name": acc_state["name"],
                     "password": config.get("password")
                 })
+        
         state["created_accounts"] = created_accounts
         state["verified_accounts"] = []
         state["pending_accounts"] = created_accounts.copy()
+        
         result_text = (
             f"<b>Account Creation Results</b>\n\n<b>Created:</b> {len(created_accounts)} account{'s' if len(created_accounts) != 1 else ''}\n\n"
         )
@@ -413,11 +429,14 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 f"• {a['name']} - <code>{a['email']}</code>" for a in created_accounts
             ])
         result_text += "\n\nPlease verify all emails, then click the button below."
+        
+        # Final response, well within the timeout
         await callback.message.edit_text(
             result_text,
             reply_markup=VERIFY_ALL_BUTTON,
             parse_mode="HTML"
         )
+
     elif data == "verify_accounts" or data == "retry_pending":
         pending = state.get("pending_accounts", [])
         if not pending:
@@ -427,17 +446,35 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 parse_mode="HTML"
             )
             return True
-        await callback.message.edit_text("<b>Verifying Accounts</b>...", parse_mode="HTML")
+            
+        await callback.message.edit_text("<b>Verifying Accounts Concurrently...</b>", parse_mode="HTML")
+        
         verified = state.get("verified_accounts", [])
-        new_pending = []
         filter_nat = state.get("filter_nationality", "")
+        
+        # Prepare concurrent sign-in tasks
+        signin_tasks = []
         for acc in pending:
-            # try_signin will generate/get device_info for this specific email
-            res = await try_signin(acc["email"], acc["password"], user_id) 
+            # Each task includes the account details and user_id to maintain the unique connection string logic
+            task = try_signin(acc["email"], acc["password"], user_id)
+            signin_tasks.append(task)
+            
+        # Execute all sign-in tasks concurrently
+        results = await asyncio.gather(*signin_tasks)
+        
+        new_pending = []
+        
+        # Process results
+        for i, res in enumerate(results):
+            acc = pending[i]
             if res.get("accessToken") and res.get("user"):
                 token = res["accessToken"]
+                
+                # These DB operations are typically fast, but we'll await them sequentially
+                # to ensure data consistency for the single verified account.
                 await set_token(user_id, token, acc["name"], acc["email"])
                 await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
+                
                 res["user"].update({
                     "email": acc["email"],
                     "password": acc["password"],
@@ -447,8 +484,11 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 verified.append(acc)
             else:
                 new_pending.append(acc)
+                
         state["verified_accounts"] = verified
         state["pending_accounts"] = new_pending
+        
+        # Final results message
         if not new_pending:
             result_text = (
                 f"<b>Verification Results</b>\n\n"
@@ -465,11 +505,13 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 "\n\nPlease verify these emails, then retry."
             )
             reply_markup = RETRY_VERIFY_BUTTON
+            
         await callback.message.edit_text(
             result_text,
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
+
     elif data == "signup_menu":
         state["stage"] = "menu"
         await callback.message.edit_text(
@@ -684,12 +726,8 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
 
 async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign up a new user.
-    
-    The existing implementation already creates a new, unique 'device_info' (connection string) 
-    for each unique email (variation) via `get_or_create_device_info_for_email`. 
-    This ensures each account uses its own unique device ID/metadata, 
-    satisfying the 'multi connection strings per account' requirement.
+    Attempt to sign up a new user, generating a new, unique 'device_info' (connection string) 
+    for the account's unique email.
     """
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
@@ -725,9 +763,8 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
 
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign in, using the unique device info associated with the email.
-    
-    This implicitly uses a unique 'connection string' for the account.
+    Attempt to sign in, using the unique device info associated with the email, 
+    effectively using a unique 'connection string'.
     """
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
