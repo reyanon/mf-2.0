@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -13,12 +14,15 @@ from aiogram.exceptions import TelegramBadRequest
 # Import custom modules from the new async db.py
 from db import (
     set_token, get_tokens, set_current_account, get_current_account, delete_token,
-    set_user_filters, get_user_filters, set_spam_filter, get_spam_filter,
+    set_user_filters, get_user_filters, get_all_user_filters, set_spam_filter, get_spam_filter,
     is_already_sent, add_sent_id, toggle_token_status, get_active_tokens,
     get_token_status, set_account_active, get_info_card,
-    set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,
+    set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,get_spam_menu_data,
     list_all_collections, get_collection_summary, connect_to_collection,
-    rename_user_collection, transfer_to_user, get_current_collection_info
+    rename_user_collection, transfer_to_user, get_current_collection_info,
+    # --- START: IMPORT NEW FUNCTIONS ---
+    get_spam_record_count, clear_spam_records
+    # --- END: IMPORT NEW FUNCTIONS ---
 )
 # Make sure these other local modules are compatible if they also perform I/O
 from lounge import send_lounge, send_lounge_all_tokens
@@ -31,6 +35,7 @@ from friend_requests import run_requests, process_all_tokens, user_states, stop_
 from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
 
 # --- Configuration & Setup ---
+#API_TOKEN = "8298119289:AAGZxvWbBswHf1R-FzSURVpDalbx_96ubyc"
 API_TOKEN = "7916536914:AAHwtvO8hfGl2U4xcfM1fAjMLNypPFEW5JQ"
 ADMIN_USER_IDS = {7405203657, 7725409374, 7691399254, 7795345443}
 TEMP_PASSWORD = "11223344"
@@ -68,8 +73,33 @@ def get_unsubscribe_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Unsubscribe Current", callback_data="unsub_current"), InlineKeyboardButton(text="Unsubscribe All", callback_data="unsub_all")], [InlineKeyboardButton(text="Back", callback_data="back_to_menu")]])
 
 async def get_spam_filter_menu(user_id: int) -> InlineKeyboardMarkup:
-    spam_filters = await get_all_spam_filters(user_id)
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"Chatroom: {'ON' if spam_filters['chatroom'] else 'OFF'}", callback_data="toggle_spam_chatroom")], [InlineKeyboardButton(text=f"Requests: {'ON' if spam_filters['request'] else 'OFF'}", callback_data="toggle_spam_request")], [InlineKeyboardButton(text=f"Lounge: {'ON' if spam_filters['lounge'] else 'OFF'}", callback_data="toggle_spam_lounge")], [InlineKeyboardButton(text="Toggle All", callback_data="toggle_spam_all"), InlineKeyboardButton(text="Back", callback_data="settings_menu")]])
+    # This single call now gets all the data we need, making it much faster
+    menu_data = await get_spam_menu_data(user_id)
+    
+    spam_filters = menu_data["filters"]
+    counts = menu_data["counts"]
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"Chatroom: {'ON' if spam_filters['chatroom'] else 'OFF'}", callback_data="toggle_spam_chatroom"),
+            InlineKeyboardButton(text=f"({counts['chatroom']})", callback_data="noop_count"),
+            InlineKeyboardButton(text="Clear", callback_data="confirm_clear_spam_chatroom")
+        ],
+        [
+            InlineKeyboardButton(text=f"Requests: {'ON' if spam_filters['request'] else 'OFF'}", callback_data="toggle_spam_request"),
+            InlineKeyboardButton(text=f"({counts['request']})", callback_data="noop_count"),
+            InlineKeyboardButton(text="Clear", callback_data="confirm_clear_spam_request")
+        ],
+        [
+            InlineKeyboardButton(text=f"Lounge: {'ON' if spam_filters['lounge'] else 'OFF'}", callback_data="toggle_spam_lounge"),
+            InlineKeyboardButton(text=f"({counts['lounge']})", callback_data="noop_count"),
+            InlineKeyboardButton(text="Clear", callback_data="confirm_clear_spam_lounge")
+        ],
+        [
+            InlineKeyboardButton(text="Toggle All", callback_data="toggle_spam_all"),
+            InlineKeyboardButton(text="Back", callback_data="settings_menu")
+        ]
+    ])
 
 def get_account_view_menu(account_idx: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Delete Account", callback_data=f"confirm_delete_{account_idx}"), InlineKeyboardButton(text="Back", callback_data="manage_accounts")]])
@@ -137,7 +167,6 @@ async def send_lounge_all(message: Message):
 
     spam_enabled = await get_individual_spam_filter(user_id, "lounge")
     status = await message.reply(f"<b>Starting Lounge Messages</b> for {len(active_tokens_data)} accounts...", parse_mode="HTML")
-    # FIX: Added 'user_id' as the last argument
     await send_lounge_all_tokens(active_tokens_data, custom_message, status, bot, user_id, spam_enabled, user_id)
 
 @router.message(Command("lounge"))
@@ -153,7 +182,6 @@ async def lounge_command(message: Message):
     custom_message = parts[1]
     spam_enabled = await get_individual_spam_filter(user_id, "lounge")
     status_message = await message.reply(f"<b>Starting Lounge Messaging...</b>", parse_mode="HTML")
-    # FIX: Added 'user_id' as the last argument
     await send_lounge(token, custom_message, status_message, bot, user_id, spam_enabled, user_id)
 
 
@@ -171,7 +199,6 @@ async def send_to_all_command(message: Message):
     spam_enabled = await get_individual_spam_filter(user_id, "chatroom")
     status_message = await message.reply("<b>Starting Chatroom Messages...</b>", parse_mode="HTML")
 
-    # --- FIX: Create sent_ids and lock for the single-token function call ---
     sent_ids = await is_already_sent(user_id, "chatroom", None, bulk=True) if spam_enabled else set()
     sent_ids_lock = asyncio.Lock()
     
@@ -197,7 +224,6 @@ async def send_chat_all(message: Message):
     spam_enabled = await get_individual_spam_filter(user_id, "chatroom")
     status = await message.reply(f"<b>Starting Multi-Account Chatroom ({len(tokens)})...</b>", parse_mode="HTML")
     
-    # --- FIX: Changed use_in_memory_deduplication from False to True to enable spam filter ---
     await send_message_to_everyone_all_tokens(
         tokens, custom_message, status, bot, user_id, spam_enabled, token_names, True, user_id
     )
@@ -224,7 +250,7 @@ async def invoke_command(message: Message):
 
     if disabled_accounts:
         for token_obj in disabled_accounts: await delete_token(user_id, token_obj["token"])
-        removed_names = "\n".join([f"â€¢ {html.escape(acc['name'])}" for acc in disabled_accounts])
+        removed_names = "\n".join([f"• {html.escape(acc['name'])}" for acc in disabled_accounts])
         await status_msg.edit_text(f"<b>Cleanup Complete</b>\nWorking: {len(working_accounts)}\nRemoved: {len(disabled_accounts)}\n\n<b>Removed accounts:</b>\n{removed_names}", parse_mode="HTML")
     else:
         await status_msg.edit_text(f"<b>All Accounts Working ({len(working_accounts)} total).</b>", parse_mode="HTML")
@@ -303,7 +329,7 @@ async def handle_new_token(message: Message):
                 return await verification_msg.edit_text("<b>Verification Error</b>.", parse_mode="HTML")
 
         account_name = token_data[1] if len(token_data) > 1 else f"Account {len(await get_tokens(user_id)) + 1}"
-        await set_token(user_id, token, account_name) # Fixed: Only pass 3 arguments, not 4
+        await set_token(user_id, token, account_name)
         await verification_msg.edit_text(f"<b>Token Verified</b> and saved as '<code>{html.escape(account_name)}</code>'.", parse_mode="HTML")
 
 async def show_manage_accounts_menu(callback_query: CallbackQuery):
@@ -314,10 +340,23 @@ async def show_manage_accounts_menu(callback_query: CallbackQuery):
     if not tokens:
         return await callback_query.message.edit_text("<b>No Accounts Found</b>...", reply_markup=back_markup, parse_mode="HTML")
 
+    all_filters = await get_all_user_filters(user_id)
+
     buttons = []
     for i, tok in enumerate(tokens):
         is_current = "🔹" if tok['token'] == current_token else "▫️"
-        buttons.append([InlineKeyboardButton(text=f"{is_current} {html.escape(tok['name'][:15])}", callback_data=f"set_account_{i}"), InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"toggle_status_{i}"), InlineKeyboardButton(text="View", callback_data=f"view_account_{i}")])
+        
+        token_filters = all_filters.get(tok['token'], {})
+        nationality_code = token_filters.get("filterNationalityCode", "")
+        
+        account_name = html.escape(tok['name'][:15])
+        display_name = f"{account_name} ({nationality_code})" if nationality_code else account_name
+
+        buttons.append([
+            InlineKeyboardButton(text=f"{is_current} {display_name}", callback_data=f"set_account_{i}"),
+            InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"toggle_status_{i}"),
+            InlineKeyboardButton(text="View", callback_data=f"view_account_{i}")
+        ])
     buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
     
     try:
@@ -404,6 +443,36 @@ async def callback_handler(callback_query: CallbackQuery):
             new_status = not await get_individual_spam_filter(user_id, filter_type)
             await set_individual_spam_filter(user_id, filter_type, new_status)
         await callback_handler(callback_query.model_copy(update={'data': 'spam_filter_menu'}))
+    
+    # --- START: NEW SPAM CLEAR LOGIC ---
+    elif data == "noop_count":
+        await callback_query.answer("This is the count of spam-filtered IDs.")
+    
+    elif data.startswith("confirm_clear_spam_"):
+        category = data.split("_")[-1]
+        await callback_query.message.edit_text(
+            f"<b>Confirm:</b> Are you sure you want to clear all <b>{category}</b> spam records?",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="Yes, Clear", callback_data=f"clear_spam_{category}"),
+                    InlineKeyboardButton(text="Cancel", callback_data="spam_filter_menu")
+                ]
+            ]),
+            parse_mode="HTML"
+        )
+        
+    elif data.startswith("clear_spam_"):
+        category = data.split("_")[-1]
+        await clear_spam_records(user_id, category)
+        await callback_query.answer(f"{category.capitalize()} spam records cleared.")
+        # Refresh the menu
+        await callback_query.message.edit_text(
+            "<b>Spam Filter Settings</b>",
+            reply_markup=await get_spam_filter_menu(user_id),
+            parse_mode="HTML"
+        )
+    # --- END: NEW SPAM CLEAR LOGIC ---
+
     elif data.startswith("set_account_"):
         idx = int(data.split("_")[-1])
         tokens = await get_tokens(user_id)
@@ -430,10 +499,10 @@ async def callback_handler(callback_query: CallbackQuery):
         elif data == "start_all":
             tokens = await get_active_tokens(user_id)
             if not tokens: return await callback_query.answer("No active tokens found.", show_alert=True)
-            msg = await callback_query.message.edit_text(f"<b>Starting Multi-Account Requests ({len(tokens)})...</b>", reply_markup=stop_markup, parse_mode="HTML")
+            
+            msg = await callback_query.message.edit_text(f"🔄 <b>AIO Starting ({len(tokens)})...</b>", reply_markup=stop_markup, parse_mode="HTML")
             state.update({"running": True, "status_message_id": msg.message_id, "pinned_message_id": msg.message_id})
-            await bot.pin_chat_message(chat_id=user_id, message_id=msg.message_id)
-            asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID))
+            asyncio.create_task(process_all_tokens(user_id, tokens, bot, TARGET_CHANNEL_ID, initial_status_message=msg))
         elif data == "stop":
             state.update({"running": False, "stopped": True})
             await callback_query.message.edit_text(f"<b>Requests Stopped.</b>", reply_markup=start_markup, parse_mode="HTML")
