@@ -8,9 +8,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from dateutil import parser
-# Assuming these are available:
 from device_info import get_or_create_device_info_for_email, get_api_payload_with_device_info
-from db import set_token, set_info_card, set_signup_config, get_signup_config, set_user_filters 
+from db import set_token, set_info_card, set_signup_config, get_signup_config, set_user_filters
 from filters import get_nationality_keyboard
 
 # Logging configuration
@@ -93,7 +92,7 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
     ],
     [
         InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"),
-        InlineKeyboardButton(text="🇨🇳 CN", callback_data="signup_filter_nationality_CN"),
+        InlineKeyboardButton(text="🇨🇳 CN", callback.data="signup_filter_nationality_CN"),
         InlineKeyboardButton(text="🇯🇵 JP", callback_data="signup_filter_nationality_JP"),
         InlineKeyboardButton(text="🇰🇷 KR", callback_data="signup_filter_nationality_KR"),
         InlineKeyboardButton(text="🇨🇦 CA", callback_data="signup_filter_nationality_CA")
@@ -160,7 +159,7 @@ def format_user_with_nationality(user: Dict) -> str:
     
     return card
 
-def generate_email_variations(base_email: str, count: int = 50) -> List[str]:
+def generate_email_variations(base_email: str, count: int = 1000) -> List[str]:
     """Generate variations of an email address by adding dots to the username."""
     if '@' not in base_email:
         return []
@@ -197,8 +196,6 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
         'Content-Type': "application/json; charset=utf-8"
     }
     
-    # Removed delay here. Only throttle the resource-intensive signup/signin calls.
-    
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -234,12 +231,10 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
             is_available, _ = result
             if is_available and len(available_emails) < num_accounts:
                 available_emails.append(email)
-            # NOTE: If pending email is found unavailable, it should be added to used_emails 
-            # by the caller if it's the sign-up failure, but we rely on the sign-up failure 
-            # logic for final persistence.
 
     # --- Check new variations if needed ---
     if len(available_emails) < num_accounts:
+        # Generate enough variations to check
         email_variations = generate_email_variations(base_email, num_accounts * 10)
         
         # Exclude: 1. Already available, 2. Pending, 3. Known Used
@@ -260,22 +255,28 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
                 email, availability_error = new_check_tasks[i]
                 is_available, _ = result
                 
-                # If an email is found to be in use during the PREVIEW check, 
-                # we don't use it, but we don't mark it as 'used' in the config 
-                # yet, as that's done by the sign-up failure logic.
-
                 if is_available and len(available_emails) < num_accounts:
                     available_emails.append(email)
     
     return available_emails
 
-def get_email_variations_count(base_email: Optional[str]) -> int:
-    """Generate and return the total count of potential email variations."""
+def get_available_variation_count(base_email: Optional[str], used_emails: List[str]) -> Tuple[int, int]:
+    """
+    Calculates the total number of POTENTIAL variations and the number of 
+    VARIATIONS AVAILABLE (Total - Used).
+    """
     if not base_email:
-        return 0
+        return 0, 0
     
-    variations = generate_email_variations(base_email, count=1000) 
-    return len(variations)
+    # Get all potential variations (up to 1000)
+    all_variations = generate_email_variations(base_email, count=1000) 
+    total_variations = len(all_variations)
+    
+    # Filter out emails known to be used
+    used_emails_set = set(used_emails)
+    available_variations = [e for e in all_variations if e not in used_emails_set]
+    
+    return total_variations, len(available_variations)
 
 async def show_signup_preview(message: Message, user_id: int, state: Dict) -> None:
     """Show a preview of the signup configuration with exact emails to be used."""
@@ -292,13 +293,13 @@ async def show_signup_preview(message: Message, user_id: int, state: Dict) -> No
     
     num_accounts = state.get('num_accounts', 1)
     pending_emails = [acc['email'] for acc in state.get('pending_accounts', [])]
-    used_emails = config.get("used_emails", []) # <-- NEW: Fetch known used emails
+    used_emails = config.get("used_emails", []) 
     
     available_emails = await select_available_emails(
         config.get("email", ""), 
         num_accounts, 
         pending_emails, 
-        used_emails # <-- NEW: Pass used emails to be filtered
+        used_emails 
     )
     
     state["selected_emails"] = available_emails
@@ -331,13 +332,16 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     auto_signup_status = config.get('auto_signup', False)
     base_email = config.get('email')
     
-    variation_count = get_email_variations_count(base_email)
-    used_count = len(config.get("used_emails", [])) # <-- NEW: Display used count
+    # --- NEW LOGIC FOR CONFIG DISPLAY ---
+    used_emails = config.get("used_emails", [])
+    total_variations, available_count = get_available_variation_count(base_email, used_emails)
+    used_count = len(used_emails)
     
     email_status_text = f"<b>Base Email:</b> <code>{base_email or 'Not set'}</code>\n"
     if base_email:
-        email_status_text += f"<b>Available Dot Variations:</b> {variation_count} total\n"
+        email_status_text += f"<b>Available Variations:</b> {available_count} of {total_variations} total\n"
         email_status_text += f"<b>Used/Unavailable Emails:</b> {used_count}"
+    # ------------------------------------
     
     config_text = (
         f"<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
