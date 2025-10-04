@@ -3,7 +3,7 @@ import json
 import random
 import itertools
 import logging
-import asyncio # <-- NEW: Import for concurrent execution
+import asyncio 
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -194,6 +194,10 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
         'Accept-Encoding': "gzip",
         'Content-Type': "application/json; charset=utf-8"
     }
+    
+    # NEW: Small random delay to prevent IP rate-limiting during checks
+    await asyncio.sleep(random.uniform(0.1, 0.3)) 
+    
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -208,25 +212,37 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
 async def select_available_emails(base_email: str, num_accounts: int, pending_emails: List[str]) -> List[str]:
     """Select available email variations, prioritizing pending emails."""
     available_emails = []
-    # First, check pending emails for availability
-    for email in pending_emails:
-        if len(available_emails) >= num_accounts:
-            break
-        is_available, _ = await check_email_exists(email)
-        if is_available:
-            available_emails.append(email)
     
-    # If more emails are needed, generate new variations
+    # --- Check pending emails ---
+    pending_check_tasks = []
+    for email in pending_emails:
+        pending_check_tasks.append((email, check_email_exists(email)))
+
+    # Execute pending checks concurrently
+    pending_results = await asyncio.gather(*[task for email, task in pending_check_tasks])
+    for i, result in enumerate(pending_results):
+        email, _ = pending_check_tasks[i]
+        is_available, _ = result
+        if is_available and len(available_emails) < num_accounts:
+            available_emails.append(email)
+            
+    # --- Check new variations if needed ---
     if len(available_emails) < num_accounts:
-        # Generate enough variations to check
         email_variations = generate_email_variations(base_email, num_accounts * 10)
-        # Exclude pending emails to avoid duplicates
-        email_variations = [e for e in email_variations if e not in pending_emails and e not in available_emails]
-        for email in email_variations:
-            if len(available_emails) >= num_accounts:
-                break
-            is_available, _ = await check_email_exists(email)
-            if is_available:
+        # Exclude emails already checked/found to be available
+        new_variations = [e for e in email_variations if e not in pending_emails and e not in available_emails]
+        
+        new_check_tasks = []
+        for email in new_variations:
+            new_check_tasks.append((email, check_email_exists(email)))
+        
+        # Execute new checks concurrently
+        new_results = await asyncio.gather(*[task for email, task in new_check_tasks])
+
+        for i, result in enumerate(new_results):
+            email, _ = new_check_tasks[i]
+            is_available, _ = result
+            if is_available and len(available_emails) < num_accounts:
                 available_emails.append(email)
     
     return available_emails
@@ -249,9 +265,17 @@ async def show_signup_preview(message: Message, user_id: int, state: Dict) -> No
             parse_mode="HTML"
         )
         return
+    # Temporarily update message while running concurrent checks
+    await message.edit_text("<b>Checking email availability concurrently...</b> This may take a moment.")
+    
     num_accounts = state.get('num_accounts', 1)
     pending_emails = [acc['email'] for acc in state.get('pending_accounts', [])]
     available_emails = await select_available_emails(config.get("email", ""), num_accounts, pending_emails)
+    
+    # Restore the original message object reference (or use the callback message)
+    # If this is called from a message handler, message is a Message. 
+    # If it is called from a callback handler, it's callback.message.
+    
     state["selected_emails"] = available_emails  # Store selected emails for creation
     filter_nat = state.get('filter_nationality', 'All Countries')
     email_list = '\n'.join([f"{i+1}. <code>{email}</code>{' (Pending)' if email in pending_emails else ''}" for i, email in enumerate(available_emails)]) if available_emails else "No available emails found!"
@@ -286,7 +310,7 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     
     email_status_text = f"<b>Base Email:</b> <code>{base_email or 'Not set'}</code>\n"
     if base_email:
-        email_status_text += f"<b>Available Variations:</b> {variation_count} total"
+        email_status_text += f"<b>Available Dot Variations:</b> {variation_count} total"
     
     config_text = (
         f"<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
@@ -400,7 +424,8 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 "birth_year": config.get("birth_year", 2000),
                 "nationality": config.get("nationality", "US")
             }
-            signup_tasks.append(try_signup(acc_state, user_id))
+            # The try_signup function now contains throttling logic
+            signup_tasks.append(try_signup(acc_state, user_id)) 
             accounts_to_create.append(acc_state)
             
         # Execute tasks concurrently
@@ -455,8 +480,8 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         # Prepare concurrent sign-in tasks
         signin_tasks = []
         for acc in pending:
-            # Each task includes the account details and user_id to maintain the unique connection string logic
-            task = try_signin(acc["email"], acc["password"], user_id)
+            # The try_signin function now contains throttling logic
+            task = try_signin(acc["email"], acc["password"], user_id) 
             signin_tasks.append(task)
             
         # Execute all sign-in tasks concurrently
@@ -470,8 +495,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             if res.get("accessToken") and res.get("user"):
                 token = res["accessToken"]
                 
-                # These DB operations are typically fast, but we'll await them sequentially
-                # to ensure data consistency for the single verified account.
+                # DB operations remain sequential to ensure atomic updates per account
                 await set_token(user_id, token, acc["name"], acc["email"])
                 await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
                 
@@ -726,9 +750,11 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
 
 async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign up a new user, generating a new, unique 'device_info' (connection string) 
-    for the account's unique email.
+    Attempt to sign up a new user with **throttling and robust error capture**.
     """
+    # CRITICAL: Introduce a randomized delay for throttling
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+    
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
     logger.warning(f"SIGN UP using Device ID: {device_info.get('device_unique_id')} for email {state['email']}")
@@ -756,16 +782,30 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
+                if response.status != 200:
+                    try:
+                        resp_json = await response.json()
+                        logger.error(f"Signup failed for {state['email']}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
+                        return resp_json
+                    except aiohttp.ContentTypeError:
+                        # NEW: Handle non-JSON error response (e.g., API dropping the connection)
+                        error_text = await response.text()
+                        logger.error(f"Signup failed for {state['email']}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
+                        return {"errorMessage": f"API Rejected Signup (Status {response.status}). Check full logs."}
+                
                 return await response.json()
+                
     except Exception as e:
-        logger.error(f"Error during signup: {e}")
-        return {"errorMessage": "Failed to register account."}
+        logger.error(f"Error during signup for {state['email']}: {e}")
+        return {"errorMessage": "Failed to register account due to connection error."}
 
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign in, using the unique device info associated with the email, 
-    effectively using a unique 'connection string'.
+    Attempt to sign in with **throttling and robust error capture**.
     """
+    # CRITICAL: Introduce a randomized delay for throttling
+    await asyncio.sleep(random.uniform(0.5, 1.5))
+    
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
@@ -775,13 +815,21 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
-                resp_json = await response.json()
                 if response.status != 200:
-                    logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
-                return resp_json
+                    try:
+                        resp_json = await response.json()
+                        logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
+                        return resp_json
+                    except aiohttp.ContentTypeError:
+                        # NEW: Handle non-JSON error response
+                        error_text = await response.text()
+                        logger.error(f"Signin failed for {email}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
+                        return {"errorMessage": f"API Rejected Signin (Status {response.status}). Check full logs."}
+
+                return await response.json()
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
-        return {"errorMessage": "Failed to sign in."}
+        return {"errorMessage": "Failed to sign in due to connection error."}
 
 async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict) -> None:
     """Store the access token and display the user card."""
