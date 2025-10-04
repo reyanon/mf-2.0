@@ -68,9 +68,8 @@ DONE_PHOTOS = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 CONFIG_MENU_REVISED = InlineKeyboardMarkup(inline_keyboard=[
-    # Removed "Change Email" button
     [InlineKeyboardButton(text="Auto Signup: Turn OFF", callback_data="toggle_auto_signup")],
-    [InlineKeyboardButton(text="Setup Signup Details", callback_data="setup_signup_config")],
+    [InlineKeyboardButton(text="Setup/Change Signup Details", callback_data="setup_signup_config")],
     [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
 ])
 
@@ -168,9 +167,7 @@ def generate_email_variations(base_email: str, count: int = 50) -> List[str]:
     # Restrict max dots to prevent combinatorial explosion for long usernames
     max_dots = min(4, len(username) - 1)
     
-    # The itertools.combinations approach can be slow for long usernames,
-    # so we'll cap the complexity for performance.
-    
+    # Generate variations using dots
     for i in range(1, max_dots + 1):
         for positions in itertools.combinations(range(1, len(username)), i):
             if len(variations) >= count:
@@ -181,7 +178,6 @@ def generate_email_variations(base_email: str, count: int = 50) -> List[str]:
                 new_username.insert(pos, '.')
             variations.add(''.join(new_username) + '@' + domain)
             
-    # If we didn't hit the count limit, fill with remaining variations
     return list(variations)[:count]
 
 def get_random_bio() -> str:
@@ -221,9 +217,10 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
     
     # If more emails are needed, generate new variations
     if len(available_emails) < num_accounts:
+        # Generate enough variations to check
         email_variations = generate_email_variations(base_email, num_accounts * 10)
         # Exclude pending emails to avoid duplicates
-        email_variations = [e for e in email_variations if e not in pending_emails]
+        email_variations = [e for e in email_variations if e not in pending_emails and e not in available_emails]
         for email in email_variations:
             if len(available_emails) >= num_accounts:
                 break
@@ -233,22 +230,13 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
     
     return available_emails
 
-def get_email_variations_preview(base_email: Optional[str]) -> str:
-    """Generate and format a preview of email variations."""
+def get_email_variations_count(base_email: Optional[str]) -> int:
+    """Generate and return the total count of potential email variations."""
     if not base_email:
-        return "N/A"
+        return 0
     
-    variations = generate_email_variations(base_email, count=5)
-    
-    if not variations:
-        return "Invalid Base Email Format"
-    
-    preview = "\n".join([f"• <code>{email}</code>" for email in variations])
-    
-    if len(variations) < 5:
-        return f"<b>Email Variations Preview:</b>\n{preview}"
-    else:
-        return f"<b>Email Variations Preview (Top 5):</b>\n{preview}\n..."
+    variations = generate_email_variations(base_email, count=1000) # Cap at 1000 for safety
+    return len(variations)
 
 async def show_signup_preview(message: Message, user_id: int, state: Dict) -> None:
     """Show a preview of the signup configuration with exact emails to be used."""
@@ -293,12 +281,15 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     auto_signup_status = config.get('auto_signup', False)
     base_email = config.get('email')
     
-    email_variations_preview = get_email_variations_preview(base_email)
+    variation_count = get_email_variations_count(base_email)
+    
+    email_status_text = f"<b>Base Email:</b> <code>{base_email or 'Not set'}</code>\n"
+    if base_email:
+        email_status_text += f"<b>Available Variations:</b> {variation_count} total"
     
     config_text = (
         f"<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
-        f"<b>Base Email:</b> <code>{base_email or 'Not set'}</code>\n"
-        f"{email_variations_preview}\n\n" # Insert email variations preview
+        f"{email_status_text}\n" # Updated to show total count
         f"<b>Password:</b> <code>{'*' * len(config.get('password', '')) if config.get('password') else 'Not set'}</code>\n"
         f"<b>Gender:</b> {config.get('gender', 'Not set')}\n"
         f"<b>Birth Year:</b> {config.get('birth_year', 'Not set')}\n"
@@ -308,7 +299,6 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     )
     menu = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Auto Signup: {'Turn OFF' if auto_signup_status else 'Turn ON'}", callback_data="toggle_auto_signup")],
-        # Renamed the button to reflect its combined function
         [InlineKeyboardButton(text="Setup/Change Signup Details", callback_data="setup_signup_config")],
         [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
     ])
@@ -337,7 +327,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
 
     if data == "signup_settings":
         await signup_settings_command(callback.message, is_callback=True)
-    # The 'change_email' block is removed as it's redundant with 'setup_signup_config'
     elif data == "toggle_auto_signup":
         config = await get_signup_config(user_id) or {}
         config['auto_signup'] = not config.get('auto_signup', False)
@@ -349,7 +338,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         state["stage"] = "config_email"
         user_signup_states[user_id] = state
         await callback.message.edit_text(
-            "<b>Setup Email</b>\n\nEnter your base Gmail address (e.g., yourname@gmail.com). This will be used to generate variations for multiple accounts.",
+            "<b>Setup Email</b>\n\nEnter your base Gmail address (e.g., yourname@gmail.com). This will be used to generate dot variations for multiple accounts.",
             reply_markup=BACK_TO_CONFIG,
             parse_mode="HTML"
         )
@@ -694,10 +683,15 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
         return None
 
 async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
-    """Attempt to sign up a new user, using a new device info for the account's unique email."""
+    """
+    Attempt to sign up a new user.
+    
+    The existing implementation already creates a new, unique 'device_info' (connection string) 
+    for each unique email (variation) via `get_or_create_device_info_for_email`. 
+    This ensures each account uses its own unique device ID/metadata, 
+    satisfying the 'multi connection strings per account' requirement.
+    """
     url = "https://api.meeff.com/user/register/email/v4"
-    # The device info is generated/retrieved based on the account's unique email, 
-    # ensuring a unique "connection string" for each account.
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
     logger.warning(f"SIGN UP using Device ID: {device_info.get('device_unique_id')} for email {state['email']}")
     base_payload = {
@@ -730,10 +724,12 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
         return {"errorMessage": "Failed to register account."}
 
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
-    """Attempt to sign in, using a new device info for the account's unique email."""
+    """
+    Attempt to sign in, using the unique device info associated with the email.
+    
+    This implicitly uses a unique 'connection string' for the account.
+    """
     url = "https://api.meeff.com/user/login/v4"
-    # The device info is generated/retrieved based on the account's unique email, 
-    # ensuring a unique "connection string" for this account.
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
     base_payload = {"provider": "email", "providerId": email, "providerToken": password, "locale": "en"}
