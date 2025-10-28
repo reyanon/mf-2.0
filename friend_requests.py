@@ -37,18 +37,87 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Stop Requests", callback_data="stop")]
 ])
 
+async def call_blindmatch_login(session, token, user_id):
+    """Call the blindmatch login endpoint."""
+    url = "https://api.meeff.com/blindmatch/login/v2"
+    device_info = await get_or_create_device_info_for_token(user_id, token)
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/json; charset=utf-8",
+        'meeff-access-token': token
+    }
+    payload = {"locale": "en"}
+    try:
+        async with session.post(url, json=payload, headers=base_headers) as response:
+            if response.status == 200:
+                return await response.json()
+            logging.warning(f"Blindmatch login returned status {response.status}")
+            return {"errorMessage": f"Blindmatch login failed: {response.status}"}
+    except Exception as e:
+        logging.error(f"Blindmatch login error: {e}")
+        return {"errorMessage": str(e)}
+
+async def check_blocked_users(session, token, user_id):
+    """Check if user is blocked by others."""
+    url = "https://api.meeff.com/user/blockedbyuser/v1?locale=en"
+    device_info = await get_or_create_device_info_for_token(user_id, token)
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'Accept-Encoding': "gzip",
+        'meeff-access-token': token
+    }
+    headers = get_headers_with_device_info(base_headers, device_info)
+
+    try:
+        async with session.get(url, headers=headers) as response:
+            if response.status == 200:
+                return await response.json()
+            logging.warning(f"Check blocked users returned status {response.status}")
+            return {"errorMessage": f"Check blocked users failed: {response.status}"}
+    except Exception as e:
+        logging.error(f"Check blocked users error: {e}")
+        return {"errorMessage": str(e)}
+
+async def call_api_init(session, token, user_id):
+    """Call the API init endpoint with device info."""
+    url = "https://api.meeff.com/api/init/v2"
+    device_info = await get_or_create_device_info_for_token(user_id, token)
+
+    payload = {
+        "platform": device_info["platform"],
+        "version": device_info["app_version"],
+        "locale": "en"
+    }
+
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/json; charset=utf-8"
+    }
+
+    try:
+        async with session.post(url, json=payload, headers=base_headers) as response:
+            if response.status == 200:
+                return await response.json()
+            logging.warning(f"API init returned status {response.status}")
+            return {"errorMessage": f"API init failed: {response.status}"}
+    except Exception as e:
+        logging.error(f"API init error: {e}")
+        return {"errorMessage": str(e)}
+
 async def fetch_users(session, token, user_id):
     """Fetch users from the API for friend requests."""
     url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
-    
+
     device_info = await get_or_create_device_info_for_token(user_id, token)
-    
+
     base_headers = {
         'User-Agent': "okhttp/5.1.0",
         'meeff-access-token': token
     }
     headers = get_headers_with_device_info(base_headers, device_info)
-    
+
     try:
         async with session.get(url, headers=headers) as response:
             if response.status == 401:
@@ -194,12 +263,17 @@ async def run_requests(user_id, bot, target_channel_id):
     lock = asyncio.Lock()
 
     async with aiohttp.ClientSession() as session:
+        # Call API init and blindmatch login at start
+        await call_api_init(session, token, user_id)
+        await call_blindmatch_login(session, token, user_id)
+        await check_blocked_users(session, token, user_id)
+
         while state["running"]:
             try:
                 if is_request_filter_enabled(user_id):
                     await apply_filter_for_account(token, user_id)
                     await asyncio.sleep(1)
-                
+
                 await bot.edit_message_text(
                     chat_id=user_id,
                     message_id=state["status_message_id"],
@@ -285,8 +359,13 @@ async def process_all_tokens(user_id, tokens, bot, target_channel_id, initial_st
         token = token_obj["token"]
         name = token_status[token]["name"]
         empty_batches = 0
-        
+
         async with aiohttp.ClientSession() as session:
+            # Initialize API, blindmatch login, and check blocked users
+            await call_api_init(session, token, user_id)
+            await call_blindmatch_login(session, token, user_id)
+            await check_blocked_users(session, token, user_id)
+
             while state["running"]:
                 try:
                     if is_request_filter_enabled(user_id):

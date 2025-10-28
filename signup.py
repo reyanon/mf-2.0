@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from dateutil import parser
-from device_info import get_or_create_device_info_for_email, get_api_payload_with_device_info
+from device_info import get_or_create_device_info_for_email, get_or_create_device_info_for_token, get_api_payload_with_device_info, get_headers_with_device_info
 from db import set_token, set_info_card, set_signup_config, get_signup_config, set_user_filters
 from filters import get_nationality_keyboard
 
@@ -802,10 +802,17 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
 async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     """
     Attempt to sign up a new user with **throttling and robust error capture**.
+    Now includes API init before signup for shadow ban prevention.
     """
     # CRITICAL: Introduce a randomized delay for throttling
     await asyncio.sleep(random.uniform(0.5, 1.5))
-    
+
+    # Step 1: Call API init before signup
+    init_result = await call_api_init(state["email"], telegram_user_id)
+    if "errorMessage" in init_result:
+        logger.warning(f"API init failed for {state['email']}, continuing anyway: {init_result['errorMessage']}")
+
+    # Step 2: Proceed with signup
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
     logger.warning(f"SIGN UP using Device ID: {device_info.get('device_unique_id')} for email {state['email']}")
@@ -839,30 +846,108 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
                         logger.error(f"Signup failed for {state['email']}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
                         return resp_json
                     except aiohttp.ContentTypeError:
-                        # Handle non-JSON error response (e.g., API dropping the connection)
                         error_text = await response.text()
                         logger.error(f"Signup failed for {state['email']}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
                         return {"errorMessage": f"API Rejected Signup (Status {response.status}). Check full logs."}
-                
+
                 return await response.json()
-                
+
     except Exception as e:
         logger.error(f"Error during signup for {state['email']}: {e}")
         return {"errorMessage": "Failed to register account due to connection error."}
 
+async def call_blindmatch_login(email: str, telegram_user_id: int, token: str = None) -> Dict:
+    """Call the blindmatch login endpoint."""
+    url = "https://api.meeff.com/blindmatch/login/v2"
+    device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/json; charset=utf-8"
+    }
+    if token:
+        base_headers['meeff-access-token'] = token
+
+    payload = {"locale": "en"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=base_headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                return {"errorMessage": f"Blindmatch login failed: {response.status}"}
+    except Exception as e:
+        logger.error(f"Blindmatch login error for {email}: {e}")
+        return {"errorMessage": str(e)}
+
+async def check_blocked_users(token: str, telegram_user_id: int) -> Dict:
+    """Check if user is blocked by others."""
+    url = "https://api.meeff.com/user/blockedbyuser/v1?locale=en"
+    device_info = await get_or_create_device_info_for_token(telegram_user_id, token)
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'Accept-Encoding': "gzip",
+        'meeff-access-token': token
+    }
+    headers = get_headers_with_device_info(base_headers, device_info)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                return {"errorMessage": f"Check blocked users failed: {response.status}"}
+    except Exception as e:
+        logger.error(f"Check blocked users error: {e}")
+        return {"errorMessage": str(e)}
+
+async def call_api_init(email: str, telegram_user_id: int) -> Dict:
+    """Call the API init endpoint with device info."""
+    url = "https://api.meeff.com/api/init/v2"
+    device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
+
+    payload = {
+        "platform": device_info["platform"],
+        "version": device_info["app_version"],
+        "locale": "en"
+    }
+
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/json; charset=utf-8"
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=base_headers) as response:
+                if response.status == 200:
+                    return await response.json()
+                return {"errorMessage": f"API init failed: {response.status}"}
+    except Exception as e:
+        logger.error(f"API init error for {email}: {e}")
+        return {"errorMessage": str(e)}
+
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     """
     Attempt to sign in with **throttling and robust error capture**.
+    Now includes API init and blindmatch login for shadow ban prevention.
     """
     # CRITICAL: Introduce a randomized delay for throttling
     await asyncio.sleep(random.uniform(0.5, 1.5))
-    
+
+    # Step 1: Call API init
+    init_result = await call_api_init(email, telegram_user_id)
+    if "errorMessage" in init_result:
+        logger.warning(f"API init failed for {email}, continuing anyway: {init_result['errorMessage']}")
+
+    # Step 2: Main login
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
     base_payload = {"provider": "email", "providerId": email, "providerToken": password, "locale": "en"}
     payload = get_api_payload_with_device_info(base_payload, device_info)
     headers = {'User-Agent': "okhttp/5.1.0", 'Content-Type': "application/json; charset=utf-8"}
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -872,12 +957,24 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
                         logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
                         return resp_json
                     except aiohttp.ContentTypeError:
-                        # Handle non-JSON error response
                         error_text = await response.text()
                         logger.error(f"Signin failed for {email}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
                         return {"errorMessage": f"API Rejected Signin (Status {response.status}). Check full logs."}
 
-                return await response.json()
+                login_result = await response.json()
+
+                # Step 3: Call blindmatch login after successful login
+                if login_result.get("accessToken"):
+                    blindmatch_result = await call_blindmatch_login(email, telegram_user_id, login_result["accessToken"])
+                    if "errorMessage" in blindmatch_result:
+                        logger.warning(f"Blindmatch login failed for {email}: {blindmatch_result['errorMessage']}")
+
+                    # Step 4: Check blocked users
+                    blocked_result = await check_blocked_users(login_result["accessToken"], telegram_user_id)
+                    if "errorMessage" in blocked_result:
+                        logger.warning(f"Check blocked users failed for {email}: {blocked_result['errorMessage']}")
+
+                return login_result
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
         return {"errorMessage": "Failed to sign in due to connection error."}
