@@ -30,7 +30,7 @@ from unsubscribe import unsubscribe_everyone
 from filters import meeff_filter_command, set_account_filter, get_meeff_filter_main_keyboard, set_filter
 from allcountry import run_all_countries
 from signup import signup_command, signup_callback_handler, signup_message_handler, signup_settings_command
-from friend_requests import run_requests, process_all_tokens, user_states, stop_markup
+from friend_requests import process_all_tokens, user_states, stop_markup
 from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
 
 # --- Configuration & Setup ---
