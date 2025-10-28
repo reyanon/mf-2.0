@@ -1,99 +1,181 @@
+# --------------------------------------------------------------
+# Android device fingerprint generator for Meeff API calls
+# --------------------------------------------------------------
+
 import random
 import string
 from typing import Dict, Optional
-from db import _get_user_collection, _ensure_user_collection_exists
 
+# ------------------------------------------------------------------
+# Helper – make MongoDB field names safe
+# ------------------------------------------------------------------
 def _sanitize_email_for_key(email: str) -> str:
-    """Replaces characters that are invalid in MongoDB field names."""
+    """Replace dots (invalid in MongoDB keys) with underscores."""
     return email.replace('.', '_')
 
+
+# ------------------------------------------------------------------
+# Device-ID & push-token generators
+# ------------------------------------------------------------------
 def generate_device_unique_id() -> str:
-    """Generate a unique device ID (16 hex characters)."""
+    """16-hex-character unique device identifier."""
     return ''.join(random.choices('0123456789abcdef', k=16))
 
+
 def generate_push_token() -> str:
-    """Generate a realistic push token."""
+    """Meeff-style push token (11-char prefix + 70-char suffix)."""
     chars = string.ascii_letters + string.digits + '_-'
     part1 = ''.join(random.choices(chars, k=11))
     part2 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=70))
     return f"{part1}:{part2}"
 
-DEVICE_MODELS = ["iPhone16,2", "iPhone16,1", "iPhone15,5", "iPhone15,4", "iPhone15,3", "iPhone15,2", "iPhone14,8", "iPhone14,7", "iPhone14,6", "iPhone14,5", "iPhone14,4", "iPhone14,3", "iPhone14,2", "iPhone13,4", "iPhone13,3", "iPhone13,2", "iPhone13,1"]
-DEVICE_NAMES = ["iPhone 15 Pro Max", "iPhone 15 Pro", "iPhone 15 Plus", "iPhone 15", "iPhone 14 Pro Max", "iPhone 14 Pro", "iPhone 14 Plus", "iPhone 14", "iPhone 13 Pro Max", "iPhone 13 Pro", "iPhone 13 mini", "iPhone 13"]
-IOS_VERSIONS = ["iOS 17.6.1", "iOS 17.5.1", "iOS 17.4.1", "iOS 17.3.1", "iOS 17.2.1", "iOS 17.1.2", "iOS 17.0.3", "iOS 16.7.8"]
-APP_VERSIONS = ["6.7.1", "6.7.0"]
 
+# ------------------------------------------------------------------
+# Android device pools (real-world models seen in traffic)
+# ------------------------------------------------------------------
+DEVICE_BRANDS = [
+    "Google", "Samsung", "Infinix", "OnePlus", "Xiaomi",
+    "OPPO", "Vivo", "Realme", "Motorola", "Sony"
+]
+
+DEVICE_MODELS = [
+    # Google Pixel
+    "Pixel 9 Pro", "Pixel 9", "Pixel 8 Pro", "Pixel 8", "Pixel 7 Pro", "Pixel 7",
+    # Samsung
+    "Galaxy S24 Ultra", "Galaxy S24+", "Galaxy S24", "Galaxy S23 Ultra", "Galaxy S23",
+    "Galaxy A55", "Galaxy A35",
+    # Infinix (exact model from your screenshot)
+    "Infinix X6858", "Infinix Note 40", "Infinix Zero 30",
+    # Others
+    "Redmi Note 13 Pro", "OnePlus 12", "OPPO Find X7", "Vivo X100", "Realme GT 6"
+]
+
+ANDROID_VERSIONS = ["15", "14", "13", "12"]          # Android 15 = API 35, etc.
+APP_VERSIONS = ["6.7.1", "6.7.0"]                    # Exact versions from traffic
+
+
+# ------------------------------------------------------------------
+# Core generator – returns a dict with **every** field Meeff expects
+# ------------------------------------------------------------------
 def generate_device_info() -> Dict[str, str]:
-    """Generate complete device information."""
-    model = random.choice(DEVICE_MODELS)
-    device_name = random.choice(DEVICE_NAMES)
-    ios_version = random.choice(IOS_VERSIONS)
-    app_version = random.choice(APP_VERSIONS)
+    """Create a full Android device fingerprint."""
+    brand   = random.choice(DEVICE_BRANDS)
+    model   = random.choice(DEVICE_MODELS)
+    os_ver  = random.choice(ANDROID_VERSIONS)
+    app_ver = random.choice(APP_VERSIONS)
+
+    # Some brands use a slightly different product string
+    product = f"{model}-OP" if brand in ("Infinix", "OPPO", "Vivo", "Realme") else model
+
+    # DISPLAY string – mimics the format seen in the official app
+    build_num = random.randint(100, 999)
+    patch     = random.randint(1, 99)
+    display   = f"{model} {os_ver}.0.{build_num}SP{patch}"
+
+    # Header value that goes into X-Device-Info
+    device_header = f"{model}-Android{os_ver}-{app_ver}"
+
     return {
-        "device_model": model, "device_name": device_name, "ios_version": ios_version,
-        "app_version": app_version, "device_unique_id": generate_device_unique_id(),
-        "push_token": generate_push_token(), "device_info_header": f"{model}-{ios_version}-{app_version}",
-        "device_string": f"BRAND: Apple, MODEL: {model}, DEVICE: {model}, PRODUCT: {model}",
-        "os": ios_version, "platform": "ios", "device_language": "en", "device_region": "US",
-        "sim_region": "US", "device_gmt_offset": "-0500", "device_rooted": 0, "device_emulator": 0
+        # Payload fields
+        "os":               f"Android v{os_ver}",
+        "platform":         "android",
+        "brand":            brand.upper(),
+        "model":            model,
+        "device":           f"{model}, DEVICE: {model.upper()}-OP",
+        "product":          product,
+        "display":          display,
+        "appVersion":       app_ver,
+        "deviceUniqueId":   generate_device_unique_id(),
+        "pushToken":        generate_push_token(),
+        "deviceLanguage":   "en",
+        "deviceRegion":     "US",
+        "simRegion":        random.choice(["US", "PK", "IN", "EU", "KR", "JP"]),
+        "deviceGmtOffset":  random.choice(["+0500", "-0500", "+0000", "+0900", "-0800"]),
+        "deviceRooted":     "0",
+        "deviceEmulator":   "0",
+
+        # Header helpers
+        "device_info_header": device_header,
+        "device_string": f"BRAND: {brand}, MODEL: {model}, DEVICE: {model}, PRODUCT: {product}"
     }
 
-def get_headers_with_device_info(base_headers: Dict[str, str], device_info: Dict[str, str]) -> Dict[str, str]:
-    """Injects device info into API request headers."""
+
+# ------------------------------------------------------------------
+# Header / payload injectors (gzip added to match traffic)
+# ------------------------------------------------------------------
+def get_headers_with_device_info(base_headers: Dict[str, str],
+                                 device_info: Dict[str, str]) -> Dict[str, str]:
+    """Add X-Device-Info and gzip (exact match to captured traffic)."""
     headers = base_headers.copy()
     headers["X-Device-Info"] = device_info["device_info_header"]
+    headers["accept-encoding"] = "gzip"
     return headers
 
-def get_api_payload_with_device_info(base_payload: Dict, device_info: Dict[str, str]) -> Dict:
-    """Injects device info into an API request payload."""
+
+def get_api_payload_with_device_info(base_payload: Dict,
+                                     device_info: Dict[str, str]) -> Dict:
+    """Inject every device field into a JSON payload."""
     payload = base_payload.copy()
     payload.update({
-        "os": device_info["os"], "platform": device_info["platform"],
-        "device": device_info["device_string"], "appVersion": device_info["app_version"],
-        "deviceUniqueId": device_info["device_unique_id"], "pushToken": device_info["push_token"],
-        "deviceLanguage": device_info["device_language"], "deviceRegion": device_info["device_region"],
-        "simRegion": device_info["sim_region"], "deviceGmtOffset": device_info["device_gmt_offset"],
-        "deviceRooted": device_info["device_rooted"], "deviceEmulator": device_info["device_emulator"]
+        "os":               device_info["os"],
+        "platform":         device_info["platform"],
+        "brand":            device_info["brand"],
+        "model":            device_info["model"],
+        "device":           device_info["device"],
+        "product":          device_info["product"],
+        "display":          device_info["display"],
+        "appVersion":       device_info["appVersion"],
+        "deviceUniqueId":   device_info["deviceUniqueId"],
+        "pushToken":        device_info["pushToken"],
+        "deviceLanguage":   device_info["deviceLanguage"],
+        "deviceRegion":     device_info["deviceRegion"],
+        "simRegion":        device_info["simRegion"],
+        "deviceGmtOffset":  device_info["deviceGmtOffset"],
+        "deviceRooted":     device_info["deviceRooted"],
+        "deviceEmulator":   device_info["deviceEmulator"]
     })
     return payload
 
 
-# --- Async DB Functions for Device Info ---
+# ------------------------------------------------------------------
+# Async DB helpers – unchanged from your original file
+# ------------------------------------------------------------------
+from db import _get_user_collection, _ensure_user_collection_exists
 
-async def store_device_info_for_email(telegram_user_id: int, email: str, device_info: Dict[str, str]):
-    """Store device info for a specific email asynchronously."""
+async def store_device_info_for_email(telegram_user_id: int,
+                                      email: str,
+                                      device_info: Dict[str, str]):
     await _ensure_user_collection_exists(telegram_user_id)
-    sanitized_email = _sanitize_email_for_key(email)
+    sanitized = _sanitize_email_for_key(email)
     user_db = _get_user_collection(telegram_user_id)
     await user_db.update_one(
         {"type": "device_info"},
-        {"$set": {f"data.{sanitized_email}": device_info}},
+        {"$set": {f"data.{sanitized}": device_info}},
         upsert=True
     )
 
-async def get_device_info_for_email(telegram_user_id: int, email: str) -> Optional[Dict[str, str]]:
-    """Get device info for a specific email asynchronously."""
+
+async def get_device_info_for_email(telegram_user_id: int,
+                                   email: str) -> Optional[Dict[str, str]]:
     await _ensure_user_collection_exists(telegram_user_id)
-    sanitized_email = _sanitize_email_for_key(email)
+    sanitized = _sanitize_email_for_key(email)
     user_db = _get_user_collection(telegram_user_id)
-    device_doc = await user_db.find_one({"type": "device_info"})
-    if device_doc and "data" in device_doc and sanitized_email in device_doc["data"]:
-        return device_doc["data"][sanitized_email]
-    return None
+    doc = await user_db.find_one({"type": "device_info"})
+    return doc.get("data", {}).get(sanitized) if doc else None
 
-async def get_or_create_device_info_for_email(telegram_user_id: int, email: str) -> Dict[str, str]:
-    """Get existing device info for email or create a new one asynchronously."""
-    device_info = await get_device_info_for_email(telegram_user_id, email)
-    if not device_info:
-        user_db = _get_user_collection(telegram_user_id)
-        if await user_db.find_one({"type": "device_info"}) is None:
-            await user_db.insert_one({"type": "device_info", "data": {}})
-        device_info = generate_device_info()
-        await store_device_info_for_email(telegram_user_id, email, device_info)
-    return device_info
 
-async def store_device_info_for_token(telegram_user_id: int, token: str, device_info: Dict[str, str]):
-    """Store device info for a specific token asynchronously."""
+async def get_or_create_device_info_for_email(telegram_user_id: int,
+                                              email: str) -> Dict[str, str]:
+    info = await get_device_info_for_email(telegram_user_id, email)
+    if not info:
+        info = generate_device_info()
+        await store_device_info_for_email(telegram_user_id, email, info)
+    return info
+
+
+async def store_device_info_for_token(telegram_user_id: int,
+                                      token: str,
+                                      device_info: Dict[str, str]):
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
     await user_db.update_one(
@@ -102,19 +184,19 @@ async def store_device_info_for_token(telegram_user_id: int, token: str, device_
         upsert=True
     )
 
-async def get_device_info_for_token(telegram_user_id: int, token: str) -> Optional[Dict[str, str]]:
-    """Get device info for a specific token asynchronously."""
+
+async def get_device_info_for_token(telegram_user_id: int,
+                                    token: str) -> Optional[Dict[str, str]]:
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
-    device_doc = await user_db.find_one({"type": "token_device_info"})
-    if device_doc and "data" in device_doc and token in device_doc["data"]:
-        return device_doc["data"][token]
-    return None
+    doc = await user_db.find_one({"type": "token_device_info"})
+    return doc.get("data", {}).get(token) if doc else None
 
-async def get_or_create_device_info_for_token(telegram_user_id: int, token: str) -> Dict[str, str]:
-    """Get existing device info for a token or create a new one asynchronously."""
-    device_info = await get_device_info_for_token(telegram_user_id, token)
-    if not device_info:
-        device_info = generate_device_info()
-        await store_device_info_for_token(telegram_user_id, token, device_info)
-    return device_info
+
+async def get_or_create_device_info_for_token(telegram_user_id: int,
+                                              token: str) -> Dict[str, str]:
+    info = await get_device_info_for_token(telegram_user_id, token)
+    if not info:
+        info = generate_device_info()
+        await store_device_info_for_token(telegram_user_id, token, info)
+    return info
