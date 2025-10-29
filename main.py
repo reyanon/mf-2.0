@@ -258,31 +258,25 @@ async def settings_command(message: Message):
     if not has_valid_access(message.chat.id): return await message.reply("You are not authorized.")
     await message.reply("<b>Settings Menu</b>", reply_markup=await get_settings_menu(message.chat.id), parse_mode="HTML")
 
-import aiohttp
-# Assuming imports for logger, Command, Message, and has_valid_access are present
-# from db import get_current_account
-
 @router.message(Command("add"))
-async def add_person_command(message: Message):
+async def add_person_command(message: types.Message):
     user_id = message.chat.id
-    # Ensure has_valid_access() is defined or imported
-    if not has_valid_access(user_id): return await message.reply("You are not authorized.")
+    if not has_valid_access(user_id):
+        await message.reply("You are not authorized to use this bot.")
+        return
     args = message.text.strip().split()
-    if len(args) < 2: return await message.reply("Usage: /add <person_id>")
-    
-    token = await get_current_account(user_id)
-    if not token: return await message.reply("No active account found.")
-
+    if len(args) < 2:
+        await message.reply("Please provide the person ID. Usage: /add <person_id>")
+        return
     person_id = args[1]
+    token = get_current_account(user_id)
+    if not token:
+        await message.reply("No active account found. Please set an account first.")
+        return
     url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={person_id}&isOkay=1"
-    
-    headers = {
-        'User-Agent': "okhttp/5.1.0",
-        'meeff-access-token': token
-    }
-    # -----------------------------------------------
-    
-     try:
+    headers = {"meeff-access-token": token, "Connection": "keep-alive"}
+
+    try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 data = await response.json()
@@ -295,8 +289,6 @@ async def add_person_command(message: Message):
     except Exception as e:
         logging.error(f"Error adding person by ID: {e}")
         await message.reply("An error occurred while trying to add this person.")
-
-
 
 @router.message()
 async def handle_new_token(message: Message):
