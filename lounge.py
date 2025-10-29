@@ -5,21 +5,17 @@ from typing import List, Dict, Set
 from aiogram import types
 from db import bulk_add_sent_ids, is_already_sent
 
-
 LOUNGE_URL = "https://api.meeff.com/lounge/dashboard/v1"
 CHATROOM_URL = "https://api.meeff.com/chatroom/open/v2"
 SEND_MESSAGE_URL = "https://api.meeff.com/chat/send/v2"
-
-# Updated User-Agent for better compatibility with current Meeff API checks
 BASE_HEADERS = {
-    'User-Agent': "okhttp/5.1.0",
+    'User-Agent': "okhttp/4.12.0",
     'Accept-Encoding': "gzip",
     'content-type': "application/json; charset=utf-8",
 }
 
 # Configure logging
 logger = logging.getLogger(__name__)
-
 async def fetch_lounge_users(session: aiohttp.ClientSession, token: str, user_id: int) -> List[Dict]:
     """Fetch users from lounge with a persistent session using simplified headers."""
     # --- SIMPLIFIED HEADERS ---
@@ -100,7 +96,7 @@ async def process_lounge_batch(
     session: aiohttp.ClientSession, token: str, users: List[Dict], message: str,
     sent_ids: Set[str], processing_ids: Set[str], lock: asyncio.Lock, user_id: int
 ) -> tuple[int, int, List[str]]:
-    """Processes a batch of users for the lounge."""
+    """Processes a batch of users, passing the user_id ."""
     tasks = []
     users_to_process = []
     filtered_count = 0
@@ -118,7 +114,6 @@ async def process_lounge_batch(
     
     for user in users_to_process:
         user_meeff_id = user["user"]["_id"]
-        # Note: telegram_user_id is still passed to open_chatroom_and_send but is unused inside now
         tasks.append(open_chatroom_and_send(session, token, user_meeff_id, message, user_id))
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -159,7 +154,6 @@ async def send_lounge(
                 f"Sent: {total_sent} | Filtered: {total_filtered}"
             )
             
-            # user_id is passed to fetch_lounge_users but is unused inside now
             users = await fetch_lounge_users(session, token, user_id)
             
             if not users:
