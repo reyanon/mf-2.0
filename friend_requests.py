@@ -89,7 +89,6 @@ def format_user(user):
         height_val, height_unit = height.split("|", 1)
         height = f"{height_val.strip()} {height_unit.strip()}"
         
-    # We remove the "Photos: ..." line because the photo will be sent directly
     return (
         f"<b>Name:</b> {html.escape(user.get('name', 'N/A'))}\n"
         f"<b>ID:</b> <code>{html.escape(user.get('_id', 'N/A'))}</code>\n"
@@ -97,13 +96,12 @@ def format_user(user):
         f"<b>Height:</b> {height}\n"
         f"<b>Description:</b> {html.escape(user.get('description', 'N/A'))}\n"
         f"<b>Birth Year:</b> {html.escape(str(user.get('birthYear', 'N/A')))}\n"
-        f"<b>Platform:</b> {html.escape(user.get('platform', 'N/A')))}\n"
+        f"<b>Platform:</b> {html.escape(user.get('platform', 'N/A'))}\n"
         f"<b>Profile Score:</b> {html.escape(str(user.get('profileScore', 'N/A')))}\n"
         f"<b>Distance:</b> {html.escape(str(user.get('distance', 'N/A')))} km\n"
         f"<b>Language Codes:</b> {html.escape(', '.join(user.get('languageCodes', [])))}\n"
         f"<b>Last Active:</b> {last_active}"
     )
-
 async def process_users(session, users, token, user_id, bot, token_name, already_sent_ids, lock):
     """Process a batch of users, sending friend requests and handling spam filters atomically."""
     state = user_states[user_id]
