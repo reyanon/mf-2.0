@@ -9,17 +9,17 @@ from filters import apply_filter_for_account, is_request_filter_enabled
 from collections import defaultdict
 from dateutil import parser
 from datetime import datetime, timezone
-from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
+
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 # ✅ Speed configuration
-PER_USER_DELAY = 0.5      # Delay can be fast again because we send photos directly
-PER_BATCH_DELAY = 1       # Delay between fetching new batches of users
-EMPTY_BATCH_DELAY = 2     # Delay after receiving an empty batch
-PER_ERROR_DELAY = 5       # Delay after a network or API error
+PER_USER_DELAY = 0.5        # Delay can be fast again because we send photos directly
+PER_BATCH_DELAY = 1         # Delay between fetching new batches of users
+EMPTY_BATCH_DELAY = 2       # Delay after receiving an empty batch
+PER_ERROR_DELAY = 5         # Delay after a network or API error
 
 
 # Global state variables for friend requests
@@ -39,15 +39,16 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
 
 async def fetch_users(session, token, user_id):
     """Fetch users from the API for friend requests."""
+    # Using the endpoint structure provided, with example location data
     url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
     
-    device_info = await get_or_create_device_info_for_token(user_id, token)
-    
-    base_headers = {
-        'User-Agent': "okhttp/4.12.0",
+    # --- SIMPLIFIED HEADERS ---
+    headers = {
+        # Using the User-Agent captured from your Reqable data
+        'User-Agent': "okhttp/5.1.0",
         'meeff-access-token': token
     }
-    headers = get_headers_with_device_info(base_headers, device_info)
+    # --------------------------------------------------------
     
     try:
         async with session.get(url, headers=headers) as response:
@@ -96,7 +97,7 @@ def format_user(user):
         f"<b>Height:</b> {height}\n"
         f"<b>Description:</b> {html.escape(user.get('description', 'N/A'))}\n"
         f"<b>Birth Year:</b> {html.escape(str(user.get('birthYear', 'N/A')))}\n"
-        f"<b>Platform:</b> {html.escape(user.get('platform', 'N/A'))}\n"
+        f"<b>Platform:</b> {html.escape(user.get('platform', 'N/A')))}\n"
         f"<b>Profile Score:</b> {html.escape(str(user.get('profileScore', 'N/A')))}\n"
         f"<b>Distance:</b> {html.escape(str(user.get('distance', 'N/A')))} km\n"
         f"<b>Language Codes:</b> {html.escape(', '.join(user.get('languageCodes', [])))}\n"
@@ -113,7 +114,7 @@ async def process_users(session, users, token, user_id, bot, token_name, already
     is_spam_filter_enabled = await get_individual_spam_filter(user_id, "request")
     ids_to_persist = []
 
-    device_info = await get_or_create_device_info_for_token(user_id, token)
+    # REMOVED: device_info = await get_or_create_device_info_for_token(user_id, token)
 
     for user in users:
         if not state["running"]: break
@@ -127,9 +128,15 @@ async def process_users(session, users, token, user_id, bot, token_name, already
                     continue
                 already_sent_ids.add(user_id_to_check)
         
+        # Using the endpoint structure provided
         url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={user_id_to_check}&isOkay=1"
-        base_headers = {"meeff-access-token": token}
-        headers = get_headers_with_device_info(base_headers, device_info)
+        
+        # --- SIMPLIFIED HEADERS (Removed device_info dependency) ---
+        headers = {
+            'User-Agent': "okhttp/5.1.0", # Added User-Agent for consistency
+            'meeff-access-token': token
+        }
+        # --------------------------------------------------------
 
         try:
             async with session.get(url, headers=headers) as response:
