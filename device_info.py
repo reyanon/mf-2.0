@@ -34,8 +34,8 @@ def generate_device_info() -> Dict[str, str]:
         "app_version": app_version, "device_unique_id": generate_device_unique_id(),
         "push_token": generate_push_token(), "device_info_header": f"{model}-{ios_version}-{app_version}",
         "device_string": f"BRAND: Apple, MODEL: {model}, DEVICE: {model}, PRODUCT: {model}",
-        "os": ios_version, "platform": "ios", "device_language": "en", "device_region": "US",
-        "sim_region": "US", "device_gmt_offset": "-0500", "device_rooted": 0, "device_emulator": 0
+        "os": ios_version, "platform": "ios", "device_language": "en", "device_region": "PK",
+        "sim_region": "PK", "device_gmt_offset": "-0500", "device_rooted": 0, "device_emulator": 0
     }
 
 def get_headers_with_device_info(base_headers: Dict[str, str], device_info: Dict[str, str]) -> Dict[str, str]:
