@@ -108,6 +108,13 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Back", callback_data="signup_photos_done")]
 ])
 
+# --- NEW KEYBOARD FOR DEVICE VERIFICATION WITH RESEND OPTION ---
+DEVICE_VERIFY_MENU = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📱 Verify Device (after clicking email link)", callback_data="verify_device_now")],
+    [InlineKeyboardButton(text="🔄 Re-send Verification Email", callback_data="resend_verify_email")],
+    [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
+])
+
 def format_user_with_nationality(user: Dict) -> str:
     """Format user information into a displayable string with nationality and last active time."""
     def time_ago(dt_str: Optional[str]) -> str:
@@ -585,7 +592,55 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             parse_mode="HTML"
         )
     
-    # --- MISSING LOGIC IMPLEMENTATION FOR DEVICE VERIFICATION RETRY ---
+    # --- HANDLER FOR RE-SEND EMAIL ---
+    elif data == "resend_verify_email":
+        email = state.get("signin_email")
+        password = state.get("signin_password")
+        
+        if not (email and password):
+            await callback.message.edit_text(
+                "<b>Error</b>\n\nSign-in data is missing. Please try signing in again.",
+                reply_markup=SIGNUP_MENU,
+                parse_mode="HTML"
+            )
+            return True
+        
+        msg = await callback.message.edit_text("<b>Re-sending Email...</b>\n\nAttempting to re-trigger the verification email.", parse_mode="HTML")
+        
+        # The try_signin function is what triggers the email when device verification is required (401 status)
+        res = await try_signin(email, password, user_id)
+        
+        # Check if the sign-in attempt was successful (meaning verification is complete)
+        if res.get("accessToken") and res.get("user"):
+            creds = {"email": email, "password": password}
+            await store_token_and_show_card(msg, res, creds)
+            state["stage"] = "menu"
+        
+        # Check if it failed, but again requires device verification (which means email was re-sent)
+        elif res.get("requiresDeviceVerification"):
+            # Update pendingDeviceId in case it changed
+            state["pending_device_id"] = res.get("pendingDeviceId")
+            # Update the message to prompt for verification
+            await msg.edit_text(
+                "<b>✅ Email Re-send Attempted</b>\n\n"
+                "A new verification email has likely been sent to:\n"
+                f"<code>{email}</code>\n\n"
+                "Please check your inbox (including spam), verify the device from the email link, then click the button below.",
+                reply_markup=DEVICE_VERIFY_MENU,
+                parse_mode="HTML"
+            )
+        
+        # Check if it failed with a different error (e.g., wrong password, banned)
+        else:
+            error_msg = res.get("errorMessage", "Unknown error during re-send.")
+            await msg.edit_text(
+                f"<b>❌ Re-send Failed</b>\n\nError: {error_msg}\n\n"
+                "Please try again or contact support.",
+                reply_markup=DEVICE_VERIFY_MENU,
+                parse_mode="HTML"
+            )
+            
+    # --- HANDLER FOR DEVICE VERIFICATION CONFIRMATION (REMAINS THE SAME) ---
     elif data == "verify_device_now":
         # 1. Check if we have the pending device info
         pending_device_id = state.get("pending_device_id")
@@ -618,21 +673,13 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         else:
             error_msg = res.get("errorMessage", "Unknown error after verification.")
             
-            # Show message with retry button (same as initial verification prompt)
-            verify_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Retry Verify Device", callback_data="verify_device_now")],
-                [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
-            ])
-            
             await msg.edit_text(
                 f"<b>❌ Sign In Failed After Verification</b>\n\n"
                 f"Error: {error_msg}\n\n"
-                "If you verified the email link, click **Retry Verify Device**.\n"
-                "If the issue persists, try signing in again from the main menu.",
-                reply_markup=verify_button,
+                "If you verified the email link, click **Verify Device** again, or click **Re-send Email**.",
+                reply_markup=DEVICE_VERIFY_MENU,
                 parse_mode="HTML"
             )
-    # --- END OF MISSING LOGIC IMPLEMENTATION ---
 
     elif data == "signup_menu":
         state["stage"] = "menu"
@@ -786,17 +833,13 @@ async def signup_message_handler(message: Message) -> bool:
             state["stage"] = "verify_device_pending"
             
             # Show message with verify button
-            verify_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Verify Device", callback_data="verify_device_now")],
-                [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
-            ])
-            
+            # NOTE: Updated to use the new DEVICE_VERIFY_MENU
             await msg.edit_text(
                 "<b>⚠️ New Device Detected</b>\n\n"
                 "A verification email has been sent to:\n"
                 f"<code>{res.get('email')}</code>\n\n"
                 "Please verify the device from the email link, then click the button below.",
-                reply_markup=verify_button,
+                reply_markup=DEVICE_VERIFY_MENU,
                 parse_mode="HTML"
             )
         
