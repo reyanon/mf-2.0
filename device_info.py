@@ -51,8 +51,8 @@ def generate_device_info() -> Dict[str, str]:
         "platform": "android", # Changed from 'ios'
         "device_language": "en", 
         "device_region": "US", 
-        "sim_region": "US", # Changed from 'US'
-        "device_gmt_offset": "-0700", # Changed from '-0500'
+        "sim_region": "PK", # Changed from 'US'
+        "device_gmt_offset": "+0500", # Changed from '-0500'
         "device_rooted": 0, 
         "device_emulator": 0
     }
