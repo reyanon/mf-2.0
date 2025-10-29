@@ -259,25 +259,21 @@ async def settings_command(message: Message):
     await message.reply("<b>Settings Menu</b>", reply_markup=await get_settings_menu(message.chat.id), parse_mode="HTML")
 
 @router.message(Command("add"))
-async def add_person_command(message: type.Message):
+async def add_person_command(message: Message):
     user_id = message.chat.id
-    if not has_valid_access(user_id):
-        await message.reply("You are not authorized to use this bot.")
-        return
+    if not has_valid_access(user_id): return await message.reply("You are not authorized.")
     args = message.text.strip().split()
-    if len(args) < 2:
-        await message.reply("Please provide the person ID. Usage: /add <person_id>")
-        return
+    if len(args) < 2: return await message.reply("Usage: /add <person_id>")
+    
+    token = await get_current_account(user_id)
+    if not token: return await message.reply("No active account found.")
+
     person_id = args[1]
-    token = get_current_account(user_id)
-    if not token:
-        await message.reply("No active account found. Please set an account first.")
-        return
     url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={person_id}&isOkay=1"
     headers = {"meeff-access-token": token, "Connection": "keep-alive"}
-
+    
     try:
-        async with aiohttp.ClientSession() as session:
+         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 data = await response.json()
                 if data.get("errorCode") == "LikeExceeded":
@@ -289,7 +285,6 @@ async def add_person_command(message: type.Message):
     except Exception as e:
         logging.error(f"Error adding person by ID: {e}")
         await message.reply("An error occurred while trying to add this person.")
-
 @router.message()
 async def handle_new_token(message: Message):
     if message.text and message.text.startswith("/"): return
