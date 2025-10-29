@@ -5,14 +5,13 @@ from db import get_current_account, get_user_filters, set_user_filters, get_toke
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio
 import aiohttp
-from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
 
 # Global state for filter settings
 user_filter_states = {}
 
 async def get_meeff_filter_main_keyboard(user_id):
     """Main Meeff Filter menu with an efficient, horizontal account layout."""
-    # --- FIX IS HERE ---
+
     tokens = await get_tokens(user_id)
     
     # Get current filter status
@@ -135,7 +134,7 @@ def get_nationality_keyboard(account_index):
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 async def apply_filter_for_account(token, user_id):
-    """Apply stored filters for a specific account"""
+    """Apply stored filters for a specific account using simplified headers."""
     try:
         user_filters = await get_user_filters(user_id, token) or {}
         
@@ -152,16 +151,15 @@ async def apply_filter_for_account(token, user_id):
         }
         
         url = "https://api.meeff.com/user/updateFilter/v1"
-        base_headers = {
-            'User-Agent': "okhttp/4.12.0",
+        
+        # --- SIMPLIFIED HEADERS  ---
+        headers = {
+            'User-Agent': "okhttp/5.1.0", # Updated User-Agent
             'Accept-Encoding': "gzip",
             'meeff-access-token': token,
             'content-type': "application/json; charset=utf-8"
         }
-        
-        # Get device info for this token
-        device_info = await get_or_create_device_info_for_token(user_id, token)
-        headers = get_headers_with_device_info(base_headers, device_info)
+        # --------------------------------------------------------
         
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=filter_data, headers=headers) as response:
