@@ -8,18 +8,14 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from dateutil import parser
-from device_info import (
-    get_or_create_device_info_for_email, 
-    get_api_payload_with_device_info,
-    get_headers_with_device_info
-)
+from device_info import get_or_create_device_info_for_email, get_api_payload_with_device_info
 from db import set_token, set_info_card, set_signup_config, get_signup_config, set_user_filters
 from filters import get_nationality_keyboard
 
 # Logging configuration
 logger = logging.getLogger(__name__)
 
-# Configuration constants
+# Configuration constants (omitted for brevity)
 DEFAULT_BIOS = [
     "Love traveling and meeting new people!",
     "Coffee lover and adventure seeker",
@@ -27,7 +23,6 @@ DEFAULT_BIOS = [
     "Foodie exploring new cuisines",
     "Fitness enthusiast and nature lover",
 ]
-
 DEFAULT_PHOTOS = (
     "https://meeffus.s3.amazonaws.com/profile/2025/06/16/"
     "20250616052423006_profile-1.0-bd262b27-1916-4bd3-9f1d-0e7fdba35268.jpg|"
@@ -38,7 +33,7 @@ DEFAULT_PHOTOS = (
 # Global state
 user_signup_states: Dict[int, Dict] = {}
 
-# Inline Keyboard Menus
+# Inline Keyboard Menus (omitted for brevity)
 SIGNUP_MENU = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text="Sign Up", callback_data="signup_go"),
@@ -96,6 +91,7 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🇫🇷 FR", callback_data="signup_filter_nationality_FR")
     ],
     [
+        # FIX APPLIED HERE: changed 'callback.data' to 'callback_data'
         InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"), 
         InlineKeyboardButton(text="🇨🇳 CN", callback_data="signup_filter_nationality_CN"),
         InlineKeyboardButton(text="🇯🇵 JP", callback_data="signup_filter_nationality_JP"),
@@ -137,10 +133,10 @@ def format_user_with_nationality(user: Dict) -> str:
 
     last_active = time_ago(user.get("recentAt"))
     card = (
-        f"<b>👤 Account Information</b>\n"
-        f"══════════════════════════\n"
-        f"<b>🧑 Name:</b> {user.get('name', 'N/A')}\n"
-        f"<b>🔑 ID:</b> <code>{user.get('_id', 'N/A')}</code>\n"
+        f"<b>📱 Account Information</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>👤 Name:</b> {user.get('name', 'N/A')}\n"
+        f"<b>🆔 ID:</b> <code>{user.get('_id', 'N/A')}</code>\n"
         f"<b>📝 Bio:</b> {user.get('description', 'N/A')}\n"
         f"<b>🎂 Birth Year:</b> {user.get('birthYear', 'N/A')}\n"
         f"<b>🌍 Country:</b> {user.get('nationalityCode', 'N/A')}\n"
@@ -170,13 +166,16 @@ def generate_email_variations(base_email: str, count: int = 1000) -> List[str]:
     username, domain = base_email.split('@', 1)
     variations = {base_email}
     
+    # Restrict max dots to prevent combinatorial explosion for long usernames
     max_dots = min(4, len(username) - 1)
     
+    # Generate variations using dots
     for i in range(1, max_dots + 1):
         for positions in itertools.combinations(range(1, len(username)), i):
             if len(variations) >= count:
                 return list(variations)
             new_username = list(username)
+            # Insert dots starting from the end to keep indices correct
             for pos in reversed(positions):
                 new_username.insert(pos, '.')
             variations.add(''.join(new_username) + '@' + domain)
@@ -214,13 +213,17 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
     emails known to be in use.
     """
     available_emails = []
+    
+    # Emails that failed the availability check or sign-up (known to be used)
     used_emails_set = set(used_emails)
     
+    # --- Check pending emails (that are not known to be used) ---
     pending_to_check = [e for e in pending_emails if e not in used_emails_set]
     pending_check_tasks = []
     for email in pending_to_check:
         pending_check_tasks.append((email, check_email_exists(email)))
 
+    # Execute pending checks concurrently
     if pending_check_tasks:
         pending_results = await asyncio.gather(*[task for email, task in pending_check_tasks])
         for i, result in enumerate(pending_results):
@@ -229,9 +232,12 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
             if is_available and len(available_emails) < num_accounts:
                 available_emails.append(email)
 
+    # --- Check new variations if needed ---
     if len(available_emails) < num_accounts:
+        # Generate enough variations to check
         email_variations = generate_email_variations(base_email, num_accounts * 10)
         
+        # Exclude: 1. Already available, 2. Pending, 3. Known Used
         new_variations = [
             e for e in email_variations 
             if e not in pending_emails and e not in available_emails and e not in used_emails_set
@@ -241,6 +247,7 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
         for email in new_variations:
             new_check_tasks.append((email, check_email_exists(email)))
         
+        # Execute new checks concurrently
         if new_check_tasks:
             new_results = await asyncio.gather(*[task for email, task in new_check_tasks])
 
@@ -261,132 +268,15 @@ def get_available_variation_count(base_email: Optional[str], used_emails: List[s
     if not base_email:
         return 0, 0
     
+    # Get all potential variations (up to 1000)
     all_variations = generate_email_variations(base_email, count=1000) 
     total_variations = len(all_variations)
     
+    # Filter out emails known to be used
     used_emails_set = set(used_emails)
     available_variations = [e for e in all_variations if e not in used_emails_set]
     
     return total_variations, len(available_variations)
-
-async def simulate_post_login_activity(token: str, device_info: dict) -> bool:
-    """
-    Simulate post-login user activities to avoid shadow ban.
-    Real users don't just login - they immediately browse, check messages, etc.
-    """
-    headers = {
-        'meeff-access-token': token,
-        'User-Agent': 'okhttp/5.1.0',
-        'Accept-Encoding': 'gzip',
-        'Content-Type': 'application/json; charset=utf-8'
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            # 1. Check blocked users
-            logger.info(f"[POST-LOGIN] Checking blocked users...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/user/blockedbyuser/v1?locale=en",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Blocked users check failed: {resp.status}")
-            
-            # 2. Blind match login
-            logger.info(f"[POST-LOGIN] Logging into blind match...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            blind_payload = {"locale": "en"}
-            async with session.post(
-                "https://api.meeff.com/blindmatch/login/v2",
-                json=blind_payload,
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Blind match login failed: {resp.status}")
-            
-            # 3. Check password update
-            logger.info(f"[POST-LOGIN] Checking password update...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/user/checkPasswordUpdate/v1?locale=en",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Password update check failed: {resp.status}")
-            
-            # 4. Get chat dashboard
-            logger.info(f"[POST-LOGIN] Loading chat dashboard...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/chatroom/dashboard/v1?locale=en",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Chat dashboard load failed: {resp.status}")
-            
-            # 5. Get matching count
-            logger.info(f"[POST-LOGIN] Getting match count...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/misc/findmatching/count/v1?locale=en",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Match count fetch failed: {resp.status}")
-            
-            # 6. Update push info
-            logger.info(f"[POST-LOGIN] Updating push notification info...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            push_payload = {
-                "platform": device_info.get("platform", "ios"),
-                "pushToken": device_info.get("push_token"),
-                "locale": "en"
-            }
-            async with session.post(
-                "https://api.meeff.com/user/updatePushInfo/v1",
-                json=push_payload,
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Push info update failed: {resp.status}")
-            
-            # 7. Browse today's profiles (light browse)
-            logger.info(f"[POST-LOGIN] Browsing today's profiles...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/today/list/v1?limit=10&page=1&locale=en",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Today list fetch failed: {resp.status}")
-            
-            # 8. Check profile visits
-            logger.info(f"[POST-LOGIN] Checking profile visits...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/user/profile/visit/list/v1?pageSize=1&lastId&isVisiable=false&locale=en",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Profile visits fetch failed: {resp.status}")
-            
-            # 9. Explore nearby users
-            logger.info(f"[POST-LOGIN] Exploring nearby users...")
-            await asyncio.sleep(random.uniform(0.5, 1.2))
-            async with session.get(
-                "https://api.meeff.com/user/explore/v2?lng=71.9179521&lat=29.6280003&locale=en&unreachableUserIds=",
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    logger.warning(f"Explore fetch failed: {resp.status}")
-            
-            logger.info(f"[POST-LOGIN] ✅ Post-login activity simulation completed")
-            return True
-            
-    except Exception as e:
-        logger.error(f"[POST-LOGIN] Error during post-login activity: {e}")
-        return False
 
 async def show_signup_preview(message: Message, user_id: int, state: Dict) -> None:
     """Show a preview of the signup configuration with exact emails to be used."""
@@ -398,7 +288,7 @@ async def show_signup_preview(message: Message, user_id: int, state: Dict) -> No
             parse_mode="HTML"
         )
         return
-    
+    # Temporarily update message while running concurrent checks
     await message.edit_text("<b>Checking email availability concurrently...</b> This may take a moment.")
     
     num_accounts = state.get('num_accounts', 1)
@@ -442,6 +332,7 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     auto_signup_status = config.get('auto_signup', False)
     base_email = config.get('email')
     
+    # --- NEW LOGIC FOR CONFIG DISPLAY ---
     used_emails = config.get("used_emails", [])
     total_variations, available_count = get_available_variation_count(base_email, used_emails)
     used_count = len(used_emails)
@@ -450,6 +341,7 @@ async def signup_settings_command(message: Message, is_callback: bool = False) -
     if base_email:
         email_status_text += f"<b>Available Variations:</b> {available_count} of {total_variations} total\n"
         email_status_text += f"<b>Used/Unavailable Emails:</b> {used_count}"
+    # ------------------------------------
     
     config_text = (
         f"<b>Signup Configuration</b>\n\nSet default values and enable Auto Signup.\n\n"
@@ -498,6 +390,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         await callback.answer(f"Auto Signup turned {'ON' if config['auto_signup'] else 'OFF'}")
         await signup_settings_command(callback.message, is_callback=True)
     elif data == "setup_signup_config":
+        # Start configuration process, beginning with the email
         state["stage"] = "config_email"
         user_signup_states[user_id] = state
         await callback.message.edit_text(
@@ -533,12 +426,13 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         state["filter_nationality"] = code if code != "all" else ""
         await show_signup_preview(callback.message, user_id, state)
     elif data == "create_accounts_confirm":
-        await callback.message.edit_text("<b>Creating Accounts...</b>", parse_mode="HTML")
+        # 1. Immediately update the message to acknowledge the command
+        await callback.message.edit_text("<b>Creating Accounts Concurrently...</b>", parse_mode="HTML")
         
         config = await get_signup_config(user_id) or {}
         num_accounts = state.get("num_accounts", 1)
         selected_emails = state.get("selected_emails", [])
-        used_emails = set(config.get("used_emails", []))
+        used_emails = set(config.get("used_emails", [])) # Set for fast lookups
         
         if not selected_emails:
             await callback.message.edit_text(
@@ -548,6 +442,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             )
             return True
         
+        # Prepare concurrent tasks
         signup_tasks = []
         accounts_to_create = []
         for email in selected_emails[:num_accounts]:
@@ -561,26 +456,33 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 "birth_year": config.get("birth_year", 2000),
                 "nationality": config.get("nationality", "US")
             }
+            # Only run sign-up if the email is not already marked as used (in case of a race condition)
             if email not in used_emails:
                 signup_tasks.append(try_signup(acc_state, user_id)) 
                 accounts_to_create.append(acc_state)
             
+        # Execute tasks concurrently
         results = await asyncio.gather(*signup_tasks)
         
+        # Process results
         created_accounts = []
         for i, res in enumerate(results):
             acc_state = accounts_to_create[i]
             if res.get("user", {}).get("_id"):
+                # SUCCESS
                 created_accounts.append({
                     "email": acc_state["email"],
                     "name": acc_state["name"],
                     "password": config.get("password")
                 })
             elif "email address is already in use" in res.get("errorMessage", "").lower():
+                # FAILURE: Mark this email as used
                 used_emails.add(acc_state["email"])
             else:
-                logger.error(f"Sign-up failed for {acc_state['email']}: {res.get('errorMessage', 'N/A')}")
+                # FAILURE: Other errors (e.g., connection, bad data)
+                logger.error(f"Sign-up failed for {acc_state['email']} with unknown error: {res.get('errorMessage', 'N/A')}")
         
+        # --- CRITICAL: Update the used_emails list in the config DB ---
         if used_emails:
             config['used_emails'] = list(used_emails)
             await set_signup_config(user_id, config)
@@ -598,10 +500,11 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             ])
         
         if len(selected_emails) > len(created_accounts):
-            result_text += "\n\n⚠️ Some emails were already in use and have been skipped for future runs."
-            
+             result_text += "\n\n⚠️ Some emails were already in use and have been skipped for future runs."
+             
         result_text += "\n\nPlease verify all emails, then click the button below."
         
+        # Final response, well within the timeout
         await callback.message.edit_text(
             result_text,
             reply_markup=VERIFY_ALL_BUTTON,
@@ -618,32 +521,40 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             )
             return True
             
+        # --- FIX: Acknowledge the callback immediately to prevent Telegram timeout ---
+        await callback.answer("Verification started, please wait. This may take a moment per account.")
+        # -------------------------------------------------------------------------
+            
         await callback.message.edit_text("<b>Verifying Accounts Concurrently...</b>", parse_mode="HTML")
         
         verified = state.get("verified_accounts", [])
         filter_nat = state.get("filter_nationality", "")
         
+        # Prepare concurrent sign-in tasks
         signin_tasks = []
         for acc in pending:
+            # The try_signin function contains throttling logic
             task = try_signin(acc["email"], acc["password"], user_id) 
             signin_tasks.append(task)
             
+        # Execute all sign-in tasks concurrently
         results = await asyncio.gather(*signin_tasks)
         
         new_pending = []
         
+        # Process results
         for i, res in enumerate(results):
             acc = pending[i]
             if res.get("accessToken") and res.get("user"):
                 token = res["accessToken"]
                 
+                # DB operations remain sequential to ensure atomic updates per account
                 await set_token(user_id, token, acc["name"], acc["email"])
-                await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
                 
-                # 🔥 POST-LOGIN ACTIVITY SIMULATION
-                logger.info(f"[VERIFY] Running post-login activity for {acc['email']}")
-                device_info = await get_or_create_device_info_for_email(user_id, acc["email"])
-                await simulate_post_login_activity(token, device_info)
+                # --- CRITICAL: RUN APP SETUP SEQUENCE HERE ---
+                await run_app_setup_sequence(token, acc["email"]) # Pass email to get device_info with push token
+                
+                await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
                 
                 res["user"].update({
                     "email": acc["email"],
@@ -658,6 +569,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         state["verified_accounts"] = verified
         state["pending_accounts"] = new_pending
         
+        # Final results message
         if not new_pending:
             result_text = (
                 f"<b>Verification Results</b>\n\n"
@@ -719,6 +631,7 @@ async def signup_message_handler(message: Message) -> bool:
                 await message.answer("Invalid Email. Please try again:", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
                 return True
             config["email"] = text
+            # Clear used emails when changing the base email
             config["used_emails"] = [] 
             state["stage"] = "config_password"
             await message.answer("<b>Setup Password</b>\nEnter the password:", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
@@ -756,6 +669,7 @@ async def signup_message_handler(message: Message) -> bool:
             state["stage"] = "menu"
             await message.answer("<b>Configuration Saved!</b>", parse_mode="HTML")
             await signup_settings_command(message)
+                
         await set_signup_config(user_id, config)
     elif stage == "ask_num_accounts":
         try:
@@ -794,11 +708,15 @@ async def signup_message_handler(message: Message) -> bool:
             if "photos" not in state:
                 state["photos"] = []
             state["photos"].append(photo_url)
+            # Delete the previous photo message to keep the chat clean
             if state.get("last_photo_message_id"):
                 try:
+                    # Note: message.bot requires an aiogram Bot instance, which is typical
+                    # but ensure your environment provides this context if running standalone.
                     await message.bot.delete_message(chat_id=user_id, message_id=state["last_photo_message_id"])
                 except Exception as e:
                     logger.warning(f"Failed to delete previous photo message: {e}")
+            # Send a new message with the updated count and Done button
             new_message = await message.answer(
                 f"<b>Profile Photos</b>\n\nPhoto uploaded ({len(state['photos'])}/6). Send another or click 'Done'.",
                 reply_markup=DONE_PHOTOS,
@@ -816,11 +734,12 @@ async def signup_message_handler(message: Message) -> bool:
             parse_mode="HTML"
         )
     elif stage == "signin_password":
-        msg = await message.answer("<b>Signing In & Activating Account...</b>", parse_mode="HTML")
+        msg = await message.answer("<b>Signing In</b>...", parse_mode="HTML")
+        # try_signin will generate/get device_info for this specific email
         res = await try_signin(state["signin_email"], text, user_id)
         if res.get("accessToken") and res.get("user"):
             creds = {"email": state["signin_email"], "password": text}
-            await store_token_and_show_card(msg, res, creds, user_id)
+            await store_token_and_show_card(msg, res, creds)
         else:
             error_msg = res.get("errorMessage", "Unknown error.")
             await msg.edit_text(
@@ -838,6 +757,7 @@ async def signup_message_handler(message: Message) -> bool:
 async def upload_tg_photo(message: Message) -> Optional[str]:
     """Upload a Telegram photo to Meeff's server."""
     try:
+        # Assuming message.bot is correctly configured in the bot environment
         file = await message.bot.get_file(message.photo[-1].file_id)
         file_url = f"https://api.telegram.org/file/bot{message.bot.token}/{file.file_path}"
         async with aiohttp.ClientSession() as session:
@@ -890,14 +810,14 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
 
 async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign up a new user with throttling and robust error capture.
+    Attempt to sign up a new user with **throttling and robust error capture**.
     """
-    await asyncio.sleep(random.uniform(2.0, 4.0))
+    # CRITICAL: Introduce a randomized delay for throttling
+    await asyncio.sleep(random.uniform(3.0, 8.0))
     
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
     logger.warning(f"SIGN UP using Device ID: {device_info.get('device_unique_id')} for email {state['email']}")
-    
     base_payload = {
         "providerId": state["email"],
         "providerToken": state["password"],
@@ -928,9 +848,10 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
                         logger.error(f"Signup failed for {state['email']}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
                         return resp_json
                     except aiohttp.ContentTypeError:
+                        # Handle non-JSON error response (e.g., API dropping the connection)
                         error_text = await response.text()
                         logger.error(f"Signup failed for {state['email']}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
-                        return {"errorMessage": f"API Rejected Signup (Status {response.status})"}
+                        return {"errorMessage": f"API Rejected Signup (Status {response.status}). Check full logs."}
                 
                 return await response.json()
                 
@@ -940,14 +861,14 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
 
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign in with throttling and robust error capture.
+    Attempt to sign in with **throttling and robust error capture**.
     """
-    await asyncio.sleep(random.uniform(2.0, 4.0))
+    # CRITICAL: Introduce a randomized delay for throttling
+    await asyncio.sleep(random.uniform(3.0, 8.0))
     
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
-    
     base_payload = {"provider": "email", "providerId": email, "providerToken": password, "locale": "en"}
     payload = get_api_payload_with_device_info(base_payload, device_info)
     headers = {'User-Agent': "okhttp/5.1.0", 'Content-Type': "application/json; charset=utf-8"}
@@ -960,31 +881,119 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
                         logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
                         return resp_json
                     except aiohttp.ContentTypeError:
+                        # Handle non-JSON error response
                         error_text = await response.text()
                         logger.error(f"Signin failed for {email}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
-                        return {"errorMessage": f"API Rejected Signin (Status {response.status})"}
+                        return {"errorMessage": f"API Rejected Signin (Status {response.status}). Check full logs."}
 
                 return await response.json()
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
         return {"errorMessage": "Failed to sign in due to connection error."}
 
-async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict, user_id: int) -> None:
-    """Store the access token and display the user card with post-login activity."""
+async def run_app_setup_sequence(token: str, email: str) -> bool:
+    """
+    Executes the post-login sequence of API calls (init, blindmatch, dashboard fetches, ads)
+    to fully 'warm up' the session and mimic a real app launch.
+    """
+    device_info = await get_or_create_device_info_for_email(None, email) # Get device info for push token and model
+    
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0", 
+        'meeff-access-token': token,
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/json; charset=utf-8"
+    }
+    
+    # ----------------------------------------------------------------------
+    # CRITICAL EXTERNAL AD/MEDIATION CALLS (Requires custom headers/User-Agent)
+    # These must be included to avoid behavioral detection
+    # ----------------------------------------------------------------------
+    
+    # User-Agent for Dalvik/WebView traffic (used by Ad/SSP hosts)
+    ad_user_agent = f"Dalvik/2.1.0 (Linux; U; Android 15; {device_info['device_model']} Build/AP3A.240905.015.A2)"
+    
+    external_calls = [
+        # SSP Request (adpies.com) - Simulates fetching an ad offer
+        ("POST", "https://ssp.adpies.com/ssp/request", {
+            'User-Agent': ad_user_agent,
+            'Content-Type': "application/x-www-form-urlencoded"
+        }, "dtype=2&ostype=1&carrier=Jazz&connectiontype=2&cc=pk&lo=en&make=INFINIX&mo=Infinix%20X6858&mid=5c29bbf88aec49234f2b4560&sid=6718c3648c8d1d43785b9700&udidtype=1&dnt=0&osver=15&sdkver=011500&bundle=com.noyesrun.meeff.kr&ver=6.7.1&dw=1080&dh=2293&vs=1&bidfloor=0.2&bidfloorcur=USD&secure=1&format=json&wv_clk_v2=1"),
+        
+        # Ad Mediation Request (adxcorp.kr) - Simulates checking ad availability
+        ("GET", f"https://api.mediation.adxcorp.kr/v1/mediations?dtype=2&ostype=1&carrier=Jazz&connectiontype=2&cc=pk&lo=en&make=INFINIX&mo=Infinix%20X6858&appId=61ea97e3cb8c67000100001a&adUnitId=682aee65b97d3faadf063f1d&udidtype=1&dnt=0&osver=15&sdkver=020800&bundle=com.noyesrun.meeff.kr&ver=6.7.1&dw=1080&dh=2293&vs=1&secure=1&format=json&wv_clk_v2=1&uuid={device_info['device_unique_id']}", {
+            'User-Agent': ad_user_agent,
+            'Accept-Encoding': "gzip"
+        }, None),
+    ]
+
+    # MEFF CORE ENDPOINTS SEQUENCE
+    meeff_core_calls = [
+        # 1. Init call 
+        ("POST", "https://api.meeff.com/api/init/v2", base_headers, {"platform":"android", "version":"6.7.1", "locale":"en"}),
+        
+        # 2. Push Token Registration (Critical for session validity)
+        ("POST", "https://api.meeff.com/user/updatePushInfo/v1", base_headers, {
+            "platform": "android", 
+            "pushToken": device_info["push_token"], 
+            "locale": "en"
+        }),
+        
+        # 3. Blindmatch login (Feature activation)
+        ("POST", "https://api.meeff.com/blindmatch/login/v2", base_headers, {"locale":"en"}),
+        
+        # 4. Dashboard Loads (GET requests)
+        ("GET", "https://api.meeff.com/user/blockedbyuser/v1?locale=en", base_headers, None),
+        ("GET", "https://api.meeff.com/user/checkPasswordUpdate/v1?locale=en", base_headers, None),
+        ("GET", "https://api.meeff.com/misc/findmatching/count/v1?locale=en", base_headers, None),
+        ("GET", "https://api.meeff.com/facetalk/vibemeet/history/count/v1?locale=en", base_headers, None), # Added based on log
+        ("GET", "https://api.meeff.com/lounge/dashboard/v1?locale=en", base_headers, None),
+        ("GET", "https://api.meeff.com/chatroom/dashboard/v1?locale=en", base_headers, None),
+        ("GET", "https://api.meeff.com/user/profile/visit/list/v1?pageSize=1&lastId&isVisiable=false&locale=en", base_headers, None),
+        ("GET", "https://api.meeff.com/today/list/v1?limit=100&page=1&locale=en", base_headers, None),
+        
+        # 5. FINAL: Explore users to load the main screen (using hardcoded Phoenix location)
+        ("GET", "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en", base_headers, None)
+    ]
+
+    async with aiohttp.ClientSession() as session:
+        # Run External/Ad calls first
+        for method, url, headers, data in external_calls:
+            await asyncio.sleep(random.uniform(0.1, 0.5))
+            try:
+                if method == "POST":
+                    # Send as form-urlencoded string
+                    async with session.post(url, headers=headers, data=data) as response:
+                        await response.read()
+                elif method == "GET":
+                    async with session.get(url, headers=headers) as response:
+                        await response.read()
+            except Exception as e:
+                logging.warning(f"Failed external call to {url.split('//')[1].split('/')[0]}: {e}")
+                continue
+
+        # Run Meff Core Sequence
+        for method, url, headers, body in meeff_core_calls:
+            await asyncio.sleep(random.uniform(0.3, 1.0))
+            try:
+                if method == "POST":
+                    async with session.post(url, headers=headers, json=body) as response:
+                        await response.read()
+                elif method == "GET":
+                    async with session.get(url, headers=headers) as response:
+                        await response.read()
+            except Exception as e:
+                logging.warning(f"Failed core setup call to {url.split('//')[1]}: {e}")
+                continue
+    return True
+
+async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict) -> None:
+    """Store the access token and display the user card."""
     access_token = login_result.get("accessToken")
     user_data = login_result.get("user")
     if access_token and user_data:
+        user_id = msg_obj.chat.id
         await set_token(user_id, access_token, user_data.get("name", creds.get("email")), creds.get("email"))
-        
-        device_info = await get_or_create_device_info_for_email(user_id, creds.get("email"))
-        
-        await msg_obj.edit_text(
-            "<b>Account Signed In!</b>\n\n<i>Activating account and loading profile...</i>",
-            parse_mode="HTML"
-        )
-        
-        await simulate_post_login_activity(access_token, device_info)
-        
         user_data.update({
             "email": creds.get("email"),
             "password": creds.get("password"),
@@ -993,7 +1002,7 @@ async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds:
         text = format_user_with_nationality(user_data)
         await set_info_card(user_id, access_token, text, creds.get("email"))
         await msg_obj.edit_text(
-            "<b>✅ Account Fully Activated & Saved!</b>\n\n" + text,
+            "<b>Account Signed In & Saved!</b>\n\n" + text,
             parse_mode="HTML",
             disable_web_page_preview=True
         )
