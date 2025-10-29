@@ -546,6 +546,10 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 
                 # DB operations remain sequential to ensure atomic updates per account
                 await set_token(user_id, token, acc["name"], acc["email"])
+                
+                # --- CRITICAL: RUN APP SETUP SEQUENCE HERE ---
+                await run_app_setup_sequence(token, user_id)
+                
                 await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
                 
                 res["user"].update({
@@ -661,6 +665,7 @@ async def signup_message_handler(message: Message) -> bool:
             state["stage"] = "menu"
             await message.answer("<b>Configuration Saved!</b>", parse_mode="HTML")
             await signup_settings_command(message)
+                
         await set_signup_config(user_id, config)
     elif stage == "ask_num_accounts":
         try:
@@ -804,7 +809,7 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     Attempt to sign up a new user with **throttling and robust error capture**.
     """
     # CRITICAL: Introduce a randomized delay for throttling
-    await asyncio.sleep(random.uniform(0.5, 1.5))
+    await asyncio.sleep(random.uniform(3.0, 8.0))
     
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
@@ -855,7 +860,7 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     Attempt to sign in with **throttling and robust error capture**.
     """
     # CRITICAL: Introduce a randomized delay for throttling
-    await asyncio.sleep(random.uniform(0.5, 1.5))
+    await asyncio.sleep(random.uniform(3.0, 8.0))
     
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
@@ -881,6 +886,61 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
         return {"errorMessage": "Failed to sign in due to connection error."}
+
+async def run_app_setup_sequence(token: str, user_id: int) -> bool:
+    """
+    Executes the post-login sequence of API calls (init, blindmatch, dashboard fetches)
+    to fully 'warm up' the session and mimic a real app launch.
+    Includes a final explore request.
+    """
+    base_headers = {
+        'User-Agent': "okhttp/5.1.0", 
+        'meeff-access-token': token,
+        'Accept-Encoding': "gzip",
+        'Content-Type': "application/json; charset=utf-8"
+    }
+    
+    # Endpoints sequence to mimic app loading all screens after login
+    endpoints_to_run = [
+        # 1. Init call (runs even after login, often for config check)
+        ("POST", "https://api.meeff.com/api/init/v2", {"platform":"android", "version":"6.7.1", "locale":"en"}),
+        # 2. Blindmatch login (Feature activation)
+        ("POST", "https://api.meeff.com/blindmatch/login/v2", {"locale":"en"}),
+        # 3. Get blocked users (runs on startup)
+        ("GET", "https://api.meeff.com/user/blockedbyuser/v1?locale=en", None),
+        # 4. Check password update
+        ("GET", "https://api.meeff.com/user/checkPasswordUpdate/v1?locale=en", None),
+        # 5. Get match counts
+        ("GET", "https://api.meeff.com/misc/findmatching/count/v1?locale=en", None),
+        # 6. Fetch Lounge dashboard data
+        ("GET", "https://api.meeff.com/lounge/dashboard/v1?locale=en", None),
+        # 7. Fetch Chat dashboard data
+        ("GET", "https://api.meeff.com/chatroom/dashboard/v1?locale=en", None),
+        # 8. Fetch profile visit list
+        ("GET", "https://api.meeff.com/user/profile/visit/list/v1?pageSize=1&lastId&isVisiable=false&locale=en", None),
+        # 9. Fetch 'Today' list
+        ("GET", "https://api.meeff.com/today/list/v1?limit=100&page=1&locale=en", None),
+        # 10. CRITICAL: Fetch users to load the main explore screen (using hardcoded Phoenix location)
+        ("GET", "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en", None)
+    ]
+
+    async with aiohttp.ClientSession() as session:
+        for method, url, body in endpoints_to_run:
+            # Introduce a small, realistic delay between 'loading' each screen element
+            await asyncio.sleep(random.uniform(0.5, 1.5))
+            
+            try:
+                if method == "POST":
+                    async with session.post(url, headers=base_headers, json=body) as response:
+                        await response.read()
+                elif method == "GET":
+                    async with session.get(url, headers=base_headers) as response:
+                        await response.read()
+            except Exception as e:
+                logging.warning(f"Failed to run setup call to {url}: {e}")
+                # We don't fail the whole setup on one call, but log the warning.
+                continue
+    return True
 
 async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict) -> None:
     """Store the access token and display the user card."""
