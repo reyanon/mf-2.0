@@ -12,37 +12,56 @@ def generate_device_unique_id() -> str:
     return ''.join(random.choices('0123456789abcdef', k=16))
 
 def generate_push_token() -> str:
-    """Generate a realistic push token."""
-    chars = string.ascii_letters + string.digits + '_-'
-    part1 = ''.join(random.choices(chars, k=11))
-    part2 = ''.join(random.choices(string.ascii_uppercase + string.digits, k=70))
-    return f"{part1}:{part2}"
+    """Generate a realistic push token. Set to empty string for Android based on user request."""
+    return ""
 
-DEVICE_MODELS = ["iPhone16,2", "iPhone16,1", "iPhone15,5", "iPhone15,4", "iPhone15,3", "iPhone15,2", "iPhone14,8", "iPhone14,7", "iPhone14,6", "iPhone14,5", "iPhone14,4", "iPhone14,3", "iPhone14,2", "iPhone13,4", "iPhone13,3", "iPhone13,2", "iPhone13,1"]
-DEVICE_NAMES = ["iPhone 15 Pro Max", "iPhone 15 Pro", "iPhone 15 Plus", "iPhone 15", "iPhone 14 Pro Max", "iPhone 14 Pro", "iPhone 14 Plus", "iPhone 14", "iPhone 13 Pro Max", "iPhone 13 Pro", "iPhone 13 mini", "iPhone 13"]
-IOS_VERSIONS = ["iOS 17.6.1", "iOS 17.5.1", "iOS 17.4.1", "iOS 17.3.1", "iOS 17.2.1", "iOS 17.1.2", "iOS 17.0.3", "iOS 16.7.8"]
-APP_VERSIONS = ["6.6.2", "6.6.1", "6.6.0", "6.5.9", "6.5.8"]
+# --- Android Configuration based on user's raw request ---
+ANDROID_MODELS = ["Infinix X6858"]
+ANDROID_OS_VERSIONS = ["Android v15"] # The 'os' value
+ANDROID_APP_VERSIONS = ["6.7.1", "6.7.0"]
+# The specific, complex device string from the user's request
+DEVICE_STRING_TEMPLATE = (
+    "BRAND: INFINIX, MODEL: {model}, DEVICE: Infinix-X6858, "
+    "PRODUCT: X6858-OP, DISPLAY: X6858-15.1.0.138SP01(OP001PF001AZ)"
+)
+# --- End Android Configuration ---
 
 def generate_device_info() -> Dict[str, str]:
-    """Generate complete device information."""
-    model = random.choice(DEVICE_MODELS)
-    device_name = random.choice(DEVICE_NAMES)
-    ios_version = random.choice(IOS_VERSIONS)
-    app_version = random.choice(APP_VERSIONS)
+    """Generate complete device information for Android."""
+    
+    model = random.choice(ANDROID_MODELS)
+    os_version = random.choice(ANDROID_OS_VERSIONS)
+    app_version = random.choice(ANDROID_APP_VERSIONS)
+
+    device_string = DEVICE_STRING_TEMPLATE.format(model=model)
+    push_token = generate_push_token()
+
     return {
-        "device_model": model, "device_name": device_name, "ios_version": ios_version,
-        "app_version": app_version, "device_unique_id": generate_device_unique_id(),
-        "push_token": generate_push_token(), "device_info_header": f"{model}-{ios_version}-{app_version}",
-        "device_string": f"BRAND: Apple, MODEL: {model}, DEVICE: {model}, PRODUCT: {model}",
-        "os": ios_version, "platform": "ios", "device_language": "en", "device_region": "US",
-        "sim_region": "PK", "device_gmt_offset": "-0500", "device_rooted": 0, "device_emulator": 0
+        "device_model": model, 
+        "device_name": "Infinix Hot 30", # A plausible name for the model
+        # The key is kept as 'ios_version' but stores Android OS string for simplicity 
+        # as it's only used internally to construct 'device_info_header' and 'os'
+        "ios_version": os_version, 
+        "app_version": app_version, 
+        "device_unique_id": generate_device_unique_id(),
+        "push_token": push_token, 
+        "device_info_header": f"{model}-{os_version}-{app_version}",
+        "device_string": device_string,
+        "os": os_version, 
+        "platform": "android", # Changed from 'ios'
+        "device_language": "en", 
+        "device_region": "US", 
+        "sim_region": "PK", # Changed from 'US'
+        "device_gmt_offset": "+0500", # Changed from '-0500'
+        "device_rooted": 0, 
+        "device_emulator": 0
     }
 
 def get_headers_with_device_info(base_headers: Dict[str, str], device_info: Dict[str, str]) -> Dict[str, str]:
-    """Injects device info into API request headers."""
-    headers = base_headers.copy()
-    headers["X-Device-Info"] = device_info["device_info_header"]
-    return headers
+    """Injects device info into API request headers. (X-Device-Info is not needed for this Android config)"""
+    # The X-Device-Info header is an iOS-specific header for some meeff endpoints.
+    # Since the raw request provided by the user did not include it, we return base headers.
+    return base_headers.copy()
 
 def get_api_payload_with_device_info(base_payload: Dict, device_info: Dict[str, str]) -> Dict:
     """Injects device info into an API request payload."""
