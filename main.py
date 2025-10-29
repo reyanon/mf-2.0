@@ -259,7 +259,7 @@ async def settings_command(message: Message):
     await message.reply("<b>Settings Menu</b>", reply_markup=await get_settings_menu(message.chat.id), parse_mode="HTML")
 
 @router.message(Command("add"))
-async def add_person_command(message: types.Message):
+async def add_person_command(message: type.Message):
     user_id = message.chat.id
     if not has_valid_access(user_id):
         await message.reply("You are not authorized to use this bot.")
