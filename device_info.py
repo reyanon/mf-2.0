@@ -38,7 +38,7 @@ def generate_device_info() -> Dict[str, str]:
 
     return {
         "device_model": model, 
-        "device_name": "Infinix Hot 30", # A plausible name for the model
+        "device_name": "Infinix note 50", # A plausible name for the model
         # The key is kept as 'ios_version' but stores Android OS string for simplicity 
         # as it's only used internally to construct 'device_info_header' and 'os'
         "ios_version": os_version, 
@@ -51,8 +51,8 @@ def generate_device_info() -> Dict[str, str]:
         "platform": "android", # Changed from 'ios'
         "device_language": "en", 
         "device_region": "US", 
-        "sim_region": "PK", # Changed from 'US'
-        "device_gmt_offset": "+0500", # Changed from '-0500'
+        "sim_region": "US", # Changed from 'US'
+        "device_gmt_offset": "-0700", # Changed from '-0500'
         "device_rooted": 0, 
         "device_emulator": 0
     }
