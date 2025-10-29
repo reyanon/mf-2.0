@@ -40,7 +40,7 @@ stop_markup = InlineKeyboardMarkup(inline_keyboard=[
 async def fetch_users(session, token, user_id):
     """Fetch users from the API for friend requests."""
     # Using the endpoint structure provided, with example location data
-    url = "https://api.meeff.com/user/explore/v2?lng=72.01282&unreachableUserIds=&lat=29.6132133&locale=en"
+    url = "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en"
     
     # --- SIMPLIFIED HEADERS ---
     headers = {
