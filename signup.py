@@ -735,6 +735,10 @@ async def signup_message_handler(message: Message) -> bool:
         res = await try_signin(state["signin_email"], text, user_id)
         if res.get("accessToken") and res.get("user"):
             creds = {"email": state["signin_email"], "password": text}
+            
+            # --- CRITICAL: RUN APP SETUP SEQUENCE HERE ---
+            await run_app_setup_sequence(res["accessToken"], user_id)
+
             await store_token_and_show_card(msg, res, creds)
         else:
             error_msg = res.get("errorMessage", "Unknown error.")
@@ -967,3 +971,4 @@ async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds:
             f"<b>Error</b>\n\nFailed to save account: {error_msg}",
             parse_mode="HTML"
         )
+
