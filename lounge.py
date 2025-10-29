@@ -4,13 +4,15 @@ import logging
 from typing import List, Dict, Set
 from aiogram import types
 from db import bulk_add_sent_ids, is_already_sent
-from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
+
 
 LOUNGE_URL = "https://api.meeff.com/lounge/dashboard/v1"
 CHATROOM_URL = "https://api.meeff.com/chatroom/open/v2"
 SEND_MESSAGE_URL = "https://api.meeff.com/chat/send/v2"
+
+# Updated User-Agent for better compatibility with current Meeff API checks
 BASE_HEADERS = {
-    'User-Agent': "okhttp/4.12.0",
+    'User-Agent': "okhttp/5.1.0",
     'Accept-Encoding': "gzip",
     'content-type': "application/json; charset=utf-8",
 }
@@ -19,10 +21,11 @@ BASE_HEADERS = {
 logger = logging.getLogger(__name__)
 
 async def fetch_lounge_users(session: aiohttp.ClientSession, token: str, user_id: int) -> List[Dict]:
-    """Fetch users from lounge with a persistent session and consistent device info."""
-    device_info = await get_or_create_device_info_for_token(user_id, token)
-    headers = get_headers_with_device_info(BASE_HEADERS, device_info)
+    """Fetch users from lounge with a persistent session using simplified headers."""
+    # --- SIMPLIFIED HEADERS ---
+    headers = BASE_HEADERS.copy()
     headers['meeff-access-token'] = token
+    # --------------------------
     
     try:
         async with session.get(LOUNGE_URL, params={'locale': "en"}, headers=headers, timeout=10) as response:
@@ -40,11 +43,12 @@ async def open_chatroom_and_send(
 ) -> bool:
     """
     Atomically opens a chatroom and sends one or more comma-separated messages
-    using consistent device info.
+    using simplified headers.
     """
-    device_info = await get_or_create_device_info_for_token(telegram_user_id, token)
-    headers = get_headers_with_device_info(BASE_HEADERS, device_info)
+    # --- SIMPLIFIED HEADERS ---
+    headers = BASE_HEADERS.copy()
     headers['meeff-access-token'] = token
+    # --------------------------
     
     # 1. Open Chatroom
     chatroom_id = None
@@ -89,14 +93,14 @@ async def open_chatroom_and_send(
 
         except Exception as e:
             logger.error(f"Error sending message part {i+1} to {target_meeff_id}: {e}")
-    
+            
     return any_message_sent
 
 async def process_lounge_batch(
     session: aiohttp.ClientSession, token: str, users: List[Dict], message: str,
     sent_ids: Set[str], processing_ids: Set[str], lock: asyncio.Lock, user_id: int
 ) -> tuple[int, int, List[str]]:
-    """Processes a batch of users, passing the user_id for consistent device info."""
+    """Processes a batch of users for the lounge."""
     tasks = []
     users_to_process = []
     filtered_count = 0
@@ -114,6 +118,7 @@ async def process_lounge_batch(
     
     for user in users_to_process:
         user_meeff_id = user["user"]["_id"]
+        # Note: telegram_user_id is still passed to open_chatroom_and_send but is unused inside now
         tasks.append(open_chatroom_and_send(session, token, user_meeff_id, message, user_id))
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -154,6 +159,7 @@ async def send_lounge(
                 f"Sent: {total_sent} | Filtered: {total_filtered}"
             )
             
+            # user_id is passed to fetch_lounge_users but is unused inside now
             users = await fetch_lounge_users(session, token, user_id)
             
             if not users:
