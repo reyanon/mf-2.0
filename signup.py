@@ -91,6 +91,7 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
         InlineKeyboardButton(text="🇫🇷 FR", callback_data="signup_filter_nationality_FR")
     ],
     [
+        # FIX APPLIED HERE: changed 'callback.data' to 'callback_data'
         InlineKeyboardButton(text="🇧🇷 BR", callback_data="signup_filter_nationality_BR"), 
         InlineKeyboardButton(text="🇨🇳 CN", callback_data="signup_filter_nationality_CN"),
         InlineKeyboardButton(text="🇯🇵 JP", callback_data="signup_filter_nationality_JP"),
@@ -218,11 +219,16 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
     
     # --- Check pending emails (that are not known to be used) ---
     pending_to_check = [e for e in pending_emails if e not in used_emails_set]
-    pending_check_tasks = [check_email_exists(email) for email in pending_to_check]
+    pending_check_tasks = []
+    for email in pending_to_check:
+        pending_check_tasks.append((email, check_email_exists(email)))
+
+    # Execute pending checks concurrently
     if pending_check_tasks:
-        pending_results = await asyncio.gather(*pending_check_tasks)
-        for i, (is_available, _) in enumerate(pending_results):
-            email = pending_to_check[i]
+        pending_results = await asyncio.gather(*[task for email, task in pending_check_tasks])
+        for i, result in enumerate(pending_results):
+            email, _ = pending_check_tasks[i]
+            is_available, _ = result
             if is_available and len(available_emails) < num_accounts:
                 available_emails.append(email)
 
@@ -237,14 +243,17 @@ async def select_available_emails(base_email: str, num_accounts: int, pending_em
             if e not in pending_emails and e not in available_emails and e not in used_emails_set
         ]
         
-        new_check_tasks = [check_email_exists(email) for email in new_variations]
+        new_check_tasks = []
+        for email in new_variations:
+            new_check_tasks.append((email, check_email_exists(email)))
         
         # Execute new checks concurrently
         if new_check_tasks:
-            new_results = await asyncio.gather(*new_check_tasks)
+            new_results = await asyncio.gather(*[task for email, task in new_check_tasks])
 
-            for i, (is_available, _) in enumerate(new_results):
-                email = new_variations[i]
+            for i, result in enumerate(new_results):
+                email, availability_error = new_check_tasks[i]
+                is_available, _ = result
                 
                 if is_available and len(available_emails) < num_accounts:
                     available_emails.append(email)
@@ -368,7 +377,6 @@ async def signup_command(message: Message) -> None:
 
 async def signup_callback_handler(callback: CallbackQuery) -> bool:
     """Handle callback queries for signup-related actions."""
-    await callback.answer()
     user_id = callback.from_user.id
     state = user_signup_states.get(user_id, {})
     data = callback.data
@@ -379,67 +387,306 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         config = await get_signup_config(user_id) or {}
         config['auto_signup'] = not config.get('auto_signup', False)
         await set_signup_config(user_id, config)
+        await callback.answer(f"Auto Signup turned {'ON' if config['auto_signup'] else 'OFF'}")
         await signup_settings_command(callback.message, is_callback=True)
+    elif data == "setup_signup_config":
+        # Start configuration process, beginning with the email
+        state["stage"] = "config_email"
+        user_signup_states[user_id] = state
+        await callback.message.edit_text(
+            "<b>Setup Email</b>\n\nEnter your base Gmail address (e.g., yourname@gmail.com). This will be used to generate dot variations for multiple accounts.",
+            reply_markup=BACK_TO_CONFIG,
+            parse_mode="HTML"
+        )
+    elif data == "signup_go":
+        config = await get_signup_config(user_id) or {}
+        if not all(k in config for k in ['email', 'password', 'gender', 'birth_year', 'nationality']):
+            await callback.message.edit_text(
+                "<b>Configuration Incomplete</b>\n\nPlease set up all details in <b>Signup Config</b> first.",
+                reply_markup=SIGNUP_MENU,
+                parse_mode="HTML"
+            )
+        else:
+            state["stage"] = "ask_num_accounts"
+            user_signup_states[user_id] = state
+            await callback.message.edit_text(
+                "<b>Account Creation</b>\n\nEnter the number of accounts to create (1-30):",
+                reply_markup=BACK_TO_SIGNUP,
+                parse_mode="HTML"
+            )
+    elif data == "signup_photos_done":
+        state["stage"] = "ask_filter_nationality"
+        await callback.message.edit_text(
+            "<b>Select Filter Nationality</b>\n\nChoose the nationality filter for requests:",
+            reply_markup=FILTER_NATIONALITY_KB,
+            parse_mode="HTML"
+        )
+    elif data.startswith("signup_filter_nationality_"):
+        code = data.split("_")[-1] if len(data.split("_")) > 3 else ""
+        state["filter_nationality"] = code if code != "all" else ""
+        await show_signup_preview(callback.message, user_id, state)
+    elif data == "create_accounts_confirm":
+        # 1. Immediately update the message to acknowledge the command
+        await callback.message.edit_text("<b>Creating Accounts Concurrently...</b>", parse_mode="HTML")
+        
+        config = await get_signup_config(user_id) or {}
+        num_accounts = state.get("num_accounts", 1)
+        selected_emails = state.get("selected_emails", [])
+        used_emails = set(config.get("used_emails", [])) # Set for fast lookups
+        
+        if not selected_emails:
+            await callback.message.edit_text(
+                "<b>No Available Emails</b>\n\nNo valid email variations found. Please try a different base email in Signup Config.",
+                reply_markup=SIGNUP_MENU,
+                parse_mode="HTML"
+            )
+            return True
+        
+        # Prepare concurrent tasks
+        signup_tasks = []
+        accounts_to_create = []
+        for email in selected_emails[:num_accounts]:
+            acc_state = {
+                "email": email,
+                "password": config.get("password"),
+                "name": state.get('name', 'User'),
+                "gender": config.get("gender"),
+                "desc": get_random_bio(),
+                "photos": state.get("photos", []),
+                "birth_year": config.get("birth_year", 2000),
+                "nationality": config.get("nationality", "US")
+            }
+            # Only run sign-up if the email is not already marked as used (in case of a race condition)
+            if email not in used_emails:
+                signup_tasks.append(try_signup(acc_state, user_id)) 
+                accounts_to_create.append(acc_state)
+            
+        # Execute tasks concurrently
+        results = await asyncio.gather(*signup_tasks)
+        
+        # Process results
+        created_accounts = []
+        for i, res in enumerate(results):
+            acc_state = accounts_to_create[i]
+            if res.get("user", {}).get("_id"):
+                # SUCCESS
+                created_accounts.append({
+                    "email": acc_state["email"],
+                    "name": acc_state["name"],
+                    "password": config.get("password")
+                })
+            elif "email address is already in use" in res.get("errorMessage", "").lower():
+                # FAILURE: Mark this email as used
+                used_emails.add(acc_state["email"])
+            else:
+                # FAILURE: Other errors (e.g., connection, bad data)
+                logger.error(f"Sign-up failed for {acc_state['email']} with unknown error: {res.get('errorMessage', 'N/A')}")
+        
+        # --- CRITICAL: Update the used_emails list in the config DB ---
+        if used_emails:
+            config['used_emails'] = list(used_emails)
+            await set_signup_config(user_id, config)
+        
+        state["created_accounts"] = created_accounts
+        state["verified_accounts"] = []
+        state["pending_accounts"] = created_accounts.copy()
+        
+        result_text = (
+            f"<b>Account Creation Results</b>\n\n<b>Created:</b> {len(created_accounts)} account{'s' if len(created_accounts) != 1 else ''}\n\n"
+        )
+        if created_accounts:
+            result_text += "<b>Created Accounts:</b>\n" + '\n'.join([
+                f"• {a['name']} - <code>{a['email']}</code>" for a in created_accounts
+            ])
+        
+        if len(selected_emails) > len(created_accounts):
+             result_text += "\n\n⚠️ Some emails were already in use and have been skipped for future runs."
+             
+        result_text += "\n\nPlease verify all emails, then click the button below."
+        
+        # Final response, well within the timeout
+        await callback.message.edit_text(
+            result_text,
+            reply_markup=VERIFY_ALL_BUTTON,
+            parse_mode="HTML"
+        )
+
+    elif data == "verify_accounts" or data == "retry_pending":
+        pending = state.get("pending_accounts", [])
+        if not pending:
+            await callback.message.edit_text(
+                "<b>No Pending Accounts</b>\n\nAll accounts are either verified or none were created.",
+                reply_markup=SIGNUP_MENU,
+                parse_mode="HTML"
+            )
+            return True
+            
+        await callback.message.edit_text("<b>Verifying Accounts Concurrently...</b>", parse_mode="HTML")
+        
+        verified = state.get("verified_accounts", [])
+        filter_nat = state.get("filter_nationality", "")
+        
+        # Prepare concurrent sign-in tasks
+        signin_tasks = []
+        for acc in pending:
+            # The try_signin function contains throttling logic
+            task = try_signin(acc["email"], acc["password"], user_id) 
+            signin_tasks.append(task)
+            
+        # Execute all sign-in tasks concurrently
+        results = await asyncio.gather(*signin_tasks)
+        
+        new_pending = []
+        
+        # Process results
+        for i, res in enumerate(results):
+            acc = pending[i]
+            if res.get("accessToken") and res.get("user"):
+                token = res["accessToken"]
+                
+                # DB operations remain sequential to ensure atomic updates per account
+                await set_token(user_id, token, acc["name"], acc["email"])
+                await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
+                
+                res["user"].update({
+                    "email": acc["email"],
+                    "password": acc["password"],
+                    "token": token
+                })
+                await set_info_card(user_id, token, format_user_with_nationality(res["user"]), acc["email"])
+                verified.append(acc)
+            else:
+                new_pending.append(acc)
+                
+        state["verified_accounts"] = verified
+        state["pending_accounts"] = new_pending
+        
+        # Final results message
+        if not new_pending:
+            result_text = (
+                f"<b>Verification Results</b>\n\n"
+                f"<b>All Accounts Verified:</b> {len(verified)} account{'s' if len(verified) != 1 else ''}\n\n"
+                "All accounts have been successfully verified and saved."
+            )
+            reply_markup = SIGNUP_MENU
+        else:
+            result_text = (
+                f"<b>Verification Results</b>\n\n"
+                f"<b>Verified:</b> {len(verified)} account{'s' if len(verified) != 1 else ''}\n"
+                f"<b>Pending Verification:</b> {len(new_pending)} account{'s' if len(new_pending) != 1 else ''}\n\n"
+                "<b>Pending Accounts:</b>\n" + '\n'.join([f"• <code>{a['email']}</code>" for a in new_pending]) +
+                "\n\nPlease verify these emails, then retry."
+            )
+            reply_markup = RETRY_VERIFY_BUTTON
+            
+        await callback.message.edit_text(
+            result_text,
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    
+    # --- MISSING LOGIC IMPLEMENTATION FOR DEVICE VERIFICATION RETRY ---
     elif data == "verify_device_now":
-        msg = callback.message
-        res = await verify_device_and_retry_signin(state["pending_device_id"], state["signin_email"], state["signin_password"], user_id)
+        # 1. Check if we have the pending device info
+        pending_device_id = state.get("pending_device_id")
+        email = state.get("signin_email")
+        password = state.get("signin_password")
+        
+        if not all([pending_device_id, email, password]):
+            await callback.message.edit_text(
+                "<b>Error</b>\n\nVerification data is missing. Please try signing in again.",
+                reply_markup=SIGNUP_MENU,
+                parse_mode="HTML"
+            )
+            return True
+
+        # 2. Acknowledge and start the concurrent process
+        msg = await callback.message.edit_text(
+            "<b>Verifying Device and Signing In...</b>\n\nAttempting to complete verification and log in.",
+            parse_mode="HTML"
+        )
+        
+        # 3. Execute the two-step process: Verify API call + Retry Login API call
+        res = await verify_device_and_retry_signin(pending_device_id, email, password, user_id)
+
+        # 4. Process the result
         if res.get("accessToken") and res.get("user"):
-            creds = {"email": state["signin_email"], "password": state["signin_password"]}
-            await store_token_and_show_card(msg, res, creds)
+            creds = {"email": email, "password": password}
+            # This calls store_token_and_show_card and updates the message
+            await store_token_and_show_card(msg, res, creds) 
             state["stage"] = "menu"
         else:
-            # Verification failed, resend email by retrying signin
-            retry_res = await try_signin(state["signin_email"], state["signin_password"], user_id)
+            error_msg = res.get("errorMessage", "Unknown error after verification.")
+            
+            # Show message with retry button (same as initial verification prompt)
             verify_button = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📱 Verify Device", callback_data="verify_device_now")],
+                [InlineKeyboardButton(text="📱 Retry Verify Device", callback_data="verify_device_now")],
                 [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
             ])
-            if retry_res.get("requiresDeviceVerification"):
-                state["pending_device_id"] = retry_res.get("pendingDeviceId")
-                await msg.edit_text(
-                    "<b>⚠️ Verification Failed - New Email Sent</b>\n\n"
-                    "Please check your email again for the new verification link, click it, then try verifying here.",
-                    reply_markup=verify_button,
-                    parse_mode="HTML"
-                )
-            else:
-                error_msg = retry_res.get("errorMessage", "Unknown error.")
-                await msg.edit_text(
-                    f"<b>❌ Verification Failed</b>\n\nError: {error_msg}",
-                    reply_markup=SIGNUP_MENU,
-                    parse_mode="HTML"
-                )
-                state["stage"] = "menu"
-    # Add other elif for other callbacks as needed
+            
+            await msg.edit_text(
+                f"<b>❌ Sign In Failed After Verification</b>\n\n"
+                f"Error: {error_msg}\n\n"
+                "If you verified the email link, click **Retry Verify Device**.\n"
+                "If the issue persists, try signing in again from the main menu.",
+                reply_markup=verify_button,
+                parse_mode="HTML"
+            )
+    # --- END OF MISSING LOGIC IMPLEMENTATION ---
+
+    elif data == "signup_menu":
+        state["stage"] = "menu"
+        await callback.message.edit_text(
+            "<b>Account Creation</b>\n\nChoose an option:",
+            reply_markup=SIGNUP_MENU,
+            parse_mode="HTML"
+        )
+    elif data == "signin_go":
+        state["stage"] = "signin_email"
+        await callback.message.edit_text(
+            "<b>Sign In</b>\n\nEnter your email address:",
+            reply_markup=BACK_TO_SIGNUP,
+            parse_mode="HTML"
+        )
+    else:
+        await callback.answer()
+        return False
+    
     user_signup_states[user_id] = state
+    await callback.answer()
     return True
 
 async def signup_message_handler(message: Message) -> bool:
-    user_id = message.chat.id
+    """Handle messages during the signup process."""
+    user_id = message.from_user.id
+    if user_id not in user_signup_states:
+        return False
     state = user_signup_states.get(user_id, {})
-    text = message.text.strip()
-    stage = state.get("stage")
-    config = await get_signup_config(user_id) or {}
+    stage = state.get("stage", "")
+    text = message.text.strip() if message.text else ""
 
-    if stage in ["config_email", "config_password", "config_gender", "config_birth_year", "config_nationality"]:
+    if stage.startswith("config_"):
+        config = await get_signup_config(user_id) or {}
         if stage == "config_email":
             if '@' not in text:
-                await message.answer("Invalid Email. Please try again:", parse_mode="HTML")
+                await message.answer("Invalid Email. Please try again:", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
                 return True
             config["email"] = text
+            # Clear used emails when changing the base email
+            config["used_emails"] = [] 
             state["stage"] = "config_password"
-            await message.answer("<b>Password</b>\nEnter a password:", parse_mode="HTML")
+            await message.answer("<b>Setup Password</b>\nEnter the password:", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
         elif stage == "config_password":
             config["password"] = text
             state["stage"] = "config_gender"
-            await message.answer("<b>Gender</b>\nEnter M or F:", parse_mode="HTML")
+            await message.answer("<b>Setup Gender</b>\nEnter gender (M/F):", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
         elif stage == "config_gender":
-            if text.upper() not in ["M", "F"]:
-                await message.answer("Invalid (M/F). Please try again:", parse_mode="HTML")
+            if text.upper() not in ("M", "F"):
+                await message.answer("Invalid. Please enter M or F:", parse_mode="HTML")
                 return True
             config["gender"] = text.upper()
             state["stage"] = "config_birth_year"
-            await message.answer("<b>Birth Year</b>\nEnter a year (1950-2010):", parse_mode="HTML")
+            await message.answer("<b>Setup Birth Year</b>\nEnter birth year (e.g., 2000):", reply_markup=BACK_TO_CONFIG, parse_mode="HTML")
         elif stage == "config_birth_year":
             try:
                 year = int(text)
@@ -447,7 +694,11 @@ async def signup_message_handler(message: Message) -> bool:
                     raise ValueError()
                 config["birth_year"] = year
                 state["stage"] = "config_nationality"
-                await message.answer("<b>Nationality</b>\nEnter a 2-letter country code (e.g., US):", parse_mode="HTML")
+                await message.answer(
+                    "<b>Setup Nationality</b>\nEnter a 2-letter code (e.g., US, UK):",
+                    reply_markup=BACK_TO_CONFIG,
+                    parse_mode="HTML"
+                )
             except ValueError:
                 await message.answer("Invalid Year (1950-2010). Please try again:", parse_mode="HTML")
                 return True
@@ -500,6 +751,8 @@ async def signup_message_handler(message: Message) -> bool:
             # Delete the previous photo message to keep the chat clean
             if state.get("last_photo_message_id"):
                 try:
+                    # Note: message.bot requires an aiogram Bot instance, which is typical
+                    # but ensure your environment provides this context if running standalone.
                     await message.bot.delete_message(chat_id=user_id, message_id=state["last_photo_message_id"])
                 except Exception as e:
                     logger.warning(f"Failed to delete previous photo message: {e}")
@@ -526,7 +779,7 @@ async def signup_message_handler(message: Message) -> bool:
         
         # Check if device verification is required
         if res.get("requiresDeviceVerification"):
-            # Store verification info for later use
+        # Store verification info for later use
             state["pending_device_id"] = res.get("pendingDeviceId")
             state["signin_email"] = res.get("email")
             state["signin_password"] = text
@@ -562,8 +815,6 @@ async def signup_message_handler(message: Message) -> bool:
                 parse_mode="HTML"
             )
             state["stage"] = "menu"
-        user_signup_states[user_id] = state
-        return True
     else:
         return False
     
@@ -716,7 +967,7 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
                     logger.info(f"Signin successful for {email}")
                     return response_data
                 
-                # Device verification needed
+                # Device verification needed (Status 401 and includes pendingDeviceId)
                 if response.status == 401 and response_data.get("pendingDeviceId"):
                     pending_device_id = response_data.get("pendingDeviceId")
                     logger.warning(f"Device verification required for {email}. Pending Device ID: {pending_device_id}")
@@ -752,23 +1003,29 @@ async def verify_device_and_retry_signin(pending_device_id: str, email: str, pas
     
     try:
         async with aiohttp.ClientSession() as session:
-            # Step 1: Verify the device
+            # Step 1: Verify the device (using the pendingDeviceId)
             verify_url = f"https://api.meeff.com/user/pendingdevice/{pending_device_id}/verify/v1"
             verify_payload = {"locale": "en"}
-            verify_payload = get_api_payload_with_device_info(verify_payload, device_info)
+            # The verify API call requires the device info payload to link the verification to the current client
+            verify_payload = get_api_payload_with_device_info(verify_payload, device_info) 
             
             async with session.post(verify_url, json=verify_payload, headers=headers) as verify_response:
                 try:
-                    verify_data = await verify_response.json()
-                    logger.info(f"Device verification response: Status {verify_response.status}")
-                except aiohttp.ContentTypeError:
-                    verify_text = await verify_response.text()
-                    logger.warning(f"Device verification returned non-JSON: {verify_text[:200]}")
+                    # Meeff's verify endpoint can return a 200/401 and sometimes non-JSON. 
+                    # We proceed to retry signin regardless of the body here, as the verification is done via email.
+                    try:
+                        verify_data = await verify_response.json()
+                        logger.info(f"Device verification response: Status {verify_response.status}, Data: {verify_data}")
+                    except aiohttp.ContentTypeError:
+                        verify_text = await verify_response.text()
+                        logger.warning(f"Device verification returned non-JSON: {verify_text[:200]}")
+                except Exception as e:
+                    logger.error(f"Error processing verify response: {e}")
                 
                 # Add delay before retry
                 await asyncio.sleep(random.uniform(0.5, 1.5))
                 
-                # Step 2: Retry signin
+                # Step 2: Retry signin (The device should now be verified on the server)
                 signin_url = "https://api.meeff.com/user/login/v4"
                 base_payload = {
                     "provider": "email",
