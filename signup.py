@@ -640,6 +640,11 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 await set_token(user_id, token, acc["name"], acc["email"])
                 await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
                 
+                # 🔥 POST-LOGIN ACTIVITY SIMULATION
+                logger.info(f"[VERIFY] Running post-login activity for {acc['email']}")
+                device_info = await get_or_create_device_info_for_email(user_id, acc["email"])
+                await simulate_post_login_activity(token, device_info)
+                
                 res["user"].update({
                     "email": acc["email"],
                     "password": acc["password"],
