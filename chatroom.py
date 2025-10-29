@@ -5,14 +5,14 @@ import html
 from aiogram import Bot, types
 from typing import List, Dict, Set
 from db import is_already_sent, bulk_add_sent_ids
-from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
 
 # --- Constants ---
 CHATROOM_URL = "https://api.meeff.com/chatroom/dashboard/v1"
 MORE_CHATROOMS_URL = "https://api.meeff.com/chatroom/more/v1"
 SEND_MESSAGE_URL = "https://api.meeff.com/chat/send/v2"
 BASE_HEADERS = {
-    'User-Agent': "okhttp/4.12.0",
+    # Using the updated User-Agent for better compatibility
+    'User-Agent': "okhttp/5.1.0",
     'Accept-Encoding': "gzip",
     'content-type': "application/json; charset=utf-8"
 }
@@ -23,20 +23,20 @@ logger = logging.getLogger(__name__)
 # --- Core API Functions (with Session Management) ---
 
 async def fetch_chatrooms(session: aiohttp.ClientSession, token: str, from_date: str = None, user_id: int = None) -> tuple[List[Dict], str | None]:
-    """Fetches the initial list of chatrooms using a provided session."""
+    """Fetches the initial list of chatrooms using a provided session and simplified headers."""
     url = CHATROOM_URL if not from_date else MORE_CHATROOMS_URL
     params = {'locale': "en"}
     if from_date:
         params['fromDate'] = from_date
     
+    # --- SIMPLIFIED HEADERS ---
     headers = BASE_HEADERS.copy()
     headers['meeff-access-token'] = token
-    if user_id:
-        device_info = await get_or_create_device_info_for_token(user_id, token)
-        headers = get_headers_with_device_info(headers, device_info)
+    # --------------------------
     
     try:
         if from_date:
+            # Note: The MORE_CHATROOMS_URL endpoint uses a POST request with JSON payload
             async with session.post(url, json=params, headers=headers, timeout=10) as response:
                 if response.status != 200:
                     logger.error(f"Failed to fetch more chatrooms: {response.status}")
@@ -44,6 +44,7 @@ async def fetch_chatrooms(session: aiohttp.ClientSession, token: str, from_date:
                 data = await response.json()
                 return data.get("rooms", []), data.get("next")
         else:
+            # The initial CHATROOM_URL endpoint uses a GET request with query params
             async with session.get(url, params=params, headers=headers, timeout=10) as response:
                 if response.status != 200:
                     logger.error(f"Failed to fetch chatrooms: {response.status}")
@@ -56,12 +57,12 @@ async def fetch_chatrooms(session: aiohttp.ClientSession, token: str, from_date:
 
 
 async def send_single_message(session: aiohttp.ClientSession, token: str, chatroom_id: str, message: str, user_id: int = None) -> bool:
-    """Sends a single message to a chatroom using a provided session."""
+    """Sends a single message to a chatroom using a provided session and simplified headers."""
+    
+    # --- SIMPLIFIED HEADERS ---
     headers = BASE_HEADERS.copy()
     headers['meeff-access-token'] = token
-    if user_id:
-        device_info = await get_or_create_device_info_for_token(user_id, token)
-        headers = get_headers_with_device_info(headers, device_info)
+    # --------------------------
     
     payload = {"chatRoomId": chatroom_id, "message": message, "locale": "en"}
     try:
@@ -87,6 +88,7 @@ async def send_message(session: aiohttp.ClientSession, token: str, chatroom_id: 
     # Send each part as separate message
     all_successful = True
     for part in message_parts:
+        # user_id is passed but unused inside send_single_message now
         success = await send_single_message(session, token, chatroom_id, part, user_id)
         if not success:
             all_successful = False
@@ -111,6 +113,7 @@ async def process_chatroom_batch(
     else:
         filtered_rooms = rooms
 
+    # user_id is passed but unused inside send_message now
     tasks = [send_message(session, token, room.get('_id'), message, user_id) for room in filtered_rooms]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
@@ -136,6 +139,7 @@ async def send_message_to_everyone(
     
     async with aiohttp.ClientSession() as session:
         while True:
+            # user_id is passed to fetch_chatrooms but is unused inside now
             rooms, next_from = await fetch_chatrooms(session, token, from_date, user_id)
             if not rooms:
                 break
@@ -174,10 +178,11 @@ async def send_message_to_everyone_all_tokens(
 
     async def _worker(token: str):
         display_name = token_names.get(token, token[:6])
-        status_entry = token_status[token]
-        status_entry['status'] = "Processing"
+        status_entry = {'name': display_name, 'rooms': 0, 'sent': 0, 'filtered': 0, 'status': "Processing"}
+        token_status[token] = status_entry
 
         try:
+            # user_id is passed but unused inside the API wrappers now
             await send_message_to_everyone(
                 token, message, chat_id, spam_enabled, user_id,
                 sent_ids, sent_ids_lock, status_entry
@@ -215,14 +220,12 @@ async def send_message_to_everyone_all_tokens(
                         logger.error(f"UI refresh error: {e}")
             await asyncio.sleep(1)
 
-    # Initialize status for UI
-    for token in tokens:
-        display_name = token_names.get(token, token[:6])
-        token_status[token] = {'name': display_name, 'rooms': 0, 'sent': 0, 'filtered': 0, 'status': "Queued"}
-
     # Start UI and worker tasks
-    ui_task = asyncio.create_task(_refresh_ui())
+    # NOTE: Initialization of token_status moved into _worker for dynamic setup
     worker_tasks = [asyncio.create_task(_worker(token)) for token in tokens]
+    # We start the UI refresh AFTER the workers are initialized to populate token_status
+    await asyncio.sleep(0.1) 
+    ui_task = asyncio.create_task(_refresh_ui())
     await asyncio.gather(*worker_tasks)
 
     # Clean up UI task
