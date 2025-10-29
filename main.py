@@ -31,7 +31,6 @@ from filters import meeff_filter_command, set_account_filter, get_meeff_filter_m
 from allcountry import run_all_countries
 from signup import signup_command, signup_callback_handler, signup_message_handler, signup_settings_command
 from friend_requests import run_requests, process_all_tokens, user_states, stop_markup
-from device_info import get_or_create_device_info_for_token, get_headers_with_device_info
 
 # --- Configuration & Setup ---
 #API_TOKEN = "8298119289:AAGZxvWbBswHf1R-FzSURVpDalbx_96ubyc"
@@ -259,9 +258,14 @@ async def settings_command(message: Message):
     if not has_valid_access(message.chat.id): return await message.reply("You are not authorized.")
     await message.reply("<b>Settings Menu</b>", reply_markup=await get_settings_menu(message.chat.id), parse_mode="HTML")
 
+import aiohttp
+# Assuming imports for logger, Command, Message, and has_valid_access are present
+# from db import get_current_account
+
 @router.message(Command("add"))
 async def add_person_command(message: Message):
     user_id = message.chat.id
+    # Ensure has_valid_access() is defined or imported
     if not has_valid_access(user_id): return await message.reply("You are not authorized.")
     args = message.text.strip().split()
     if len(args) < 2: return await message.reply("Usage: /add <person_id>")
@@ -271,18 +275,28 @@ async def add_person_command(message: Message):
 
     person_id = args[1]
     url = f"https://api.meeff.com/user/undoableAnswer/v5/?userId={person_id}&isOkay=1"
-    device_info = await get_or_create_device_info_for_token(user_id, token)
-    headers = get_headers_with_device_info({"meeff-access-token": token}, device_info)
     
-    try:
+    headers = {
+        'User-Agent': "okhttp/5.1.0",
+        'meeff-access-token': token
+    }
+    # -----------------------------------------------
+    
+     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 data = await response.json()
-                if data.get("errorCode"): await message.reply(f"Failed: {data.get('errorMessage', 'Unknown error')}")
-                else: await message.reply(f"Successfully added person with ID: {person_id}")
+                if data.get("errorCode") == "LikeExceeded":
+                    await message.reply("You've reached the daily like limit.")
+                elif data.get("errorCode"):
+                    await message.reply(f"Failed: {data.get('errorMessage', 'Unknown error')}")
+                else:
+                    await message.reply(f"Successfully added person with ID: {person_id}")
     except Exception as e:
-        logger.error(f"Error adding person by ID: {e}")
-        await message.reply("An error occurred.")
+        logging.error(f"Error adding person by ID: {e}")
+        await message.reply("An error occurred while trying to add this person.")
+
+
 
 @router.message()
 async def handle_new_token(message: Message):
@@ -315,21 +329,18 @@ async def handle_new_token(message: Message):
         token = token_data[0]
         if len(token) < 100: return await message.reply("Invalid token format.")
 
-        verification_msg = await message.reply("<b>Verifying Token...</b>", parse_mode="HTML")
-        device_info = await get_or_create_device_info_for_token(user_id, token)
-        headers = get_headers_with_device_info({'User-Agent': "okhttp/5.0.0-alpha.14", 'meeff-access-token': token}, device_info)
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get("https://api.meeff.com/facetalk/vibemeet/history/count/v1", params={'locale': "en"}, headers=headers) as resp:
-                    if (await resp.json(content_type=None)).get("errorCode") == "AuthRequired":
-                        return await verification_msg.edit_text("<b>Invalid Token</b>.", parse_mode="HTML")
-            except Exception as e:
-                logger.error(f"Error verifying token: {e}")
-                return await verification_msg.edit_text("<b>Verification Error</b>.", parse_mode="HTML")
+
+        
+        # The message will be used as the status update for saving
+        status_msg = await message.reply("<b>Saving Token...</b>", parse_mode="HTML")
 
         account_name = token_data[1] if len(token_data) > 1 else f"Account {len(await get_tokens(user_id)) + 1}"
+        
+        # Save the token
         await set_token(user_id, token, account_name)
-        await verification_msg.edit_text(f"<b>Token Verified</b> and saved as '<code>{html.escape(account_name)}</code>'.", parse_mode="HTML")
+        
+        # Report success without verification status
+        await status_msg.edit_text(f"✅ <b>Token Saved</b> and named '<code>{html.escape(account_name)}</code>'.", parse_mode="HTML")
 
 async def show_manage_accounts_menu(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
