@@ -108,13 +108,6 @@ FILTER_NATIONALITY_KB = InlineKeyboardMarkup(inline_keyboard=[
     [InlineKeyboardButton(text="Back", callback_data="signup_photos_done")]
 ])
 
-# --- NEW KEYBOARD FOR DEVICE VERIFICATION WITH RESEND OPTION ---
-DEVICE_VERIFY_MENU = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📱 Verify Device (after clicking email link)", callback_data="verify_device_now")],
-    [InlineKeyboardButton(text="🔄 Re-send Verification Email", callback_data="resend_verify_email")],
-    [InlineKeyboardButton(text="Back", callback_data="signup_menu")]
-])
-
 def format_user_with_nationality(user: Dict) -> str:
     """Format user information into a displayable string with nationality and last active time."""
     def time_ago(dt_str: Optional[str]) -> str:
@@ -198,7 +191,7 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
     url = "https://api.meeff.com/user/checkEmail/v1"
     payload = {"email": email, "locale": "en"}
     headers = {
-        'User-Agent': "okhttp/5.0.0-alpha.14",
+        'User-Agent': "okhttp/5.1.0",
         'Accept-Encoding': "gzip",
         'Content-Type': "application/json; charset=utf-8"
     }
@@ -591,95 +584,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
-    
-    # --- HANDLER FOR RE-SEND EMAIL ---
-    elif data == "resend_verify_email":
-        email = state.get("signin_email")
-        password = state.get("signin_password")
-        
-        if not (email and password):
-            await callback.message.edit_text(
-                "<b>Error</b>\n\nSign-in data is missing. Please try signing in again.",
-                reply_markup=SIGNUP_MENU,
-                parse_mode="HTML"
-            )
-            return True
-        
-        msg = await callback.message.edit_text("<b>Re-sending Email...</b>\n\nAttempting to re-trigger the verification email.", parse_mode="HTML")
-        
-        # The try_signin function is what triggers the email when device verification is required (401 status)
-        res = await try_signin(email, password, user_id)
-        
-        # Check if the sign-in attempt was successful (meaning verification is complete)
-        if res.get("accessToken") and res.get("user"):
-            creds = {"email": email, "password": password}
-            await store_token_and_show_card(msg, res, creds)
-            state["stage"] = "menu"
-        
-        # Check if it failed, but again requires device verification (which means email was re-sent)
-        elif res.get("requiresDeviceVerification"):
-            # Update pendingDeviceId in case it changed
-            state["pending_device_id"] = res.get("pendingDeviceId")
-            # Update the message to prompt for verification
-            await msg.edit_text(
-                "<b>✅ Email Re-send Attempted</b>\n\n"
-                "A new verification email has likely been sent to:\n"
-                f"<code>{email}</code>\n\n"
-                "Please check your inbox (including spam), verify the device from the email link, then click the button below.",
-                reply_markup=DEVICE_VERIFY_MENU,
-                parse_mode="HTML"
-            )
-        
-        # Check if it failed with a different error (e.g., wrong password, banned)
-        else:
-            error_msg = res.get("errorMessage", "Unknown error during re-send.")
-            await msg.edit_text(
-                f"<b>❌ Re-send Failed</b>\n\nError: {error_msg}\n\n"
-                "Please try again or contact support.",
-                reply_markup=DEVICE_VERIFY_MENU,
-                parse_mode="HTML"
-            )
-            
-    # --- HANDLER FOR DEVICE VERIFICATION CONFIRMATION (REMAINS THE SAME) ---
-    elif data == "verify_device_now":
-        # 1. Check if we have the pending device info
-        pending_device_id = state.get("pending_device_id")
-        email = state.get("signin_email")
-        password = state.get("signin_password")
-        
-        if not all([pending_device_id, email, password]):
-            await callback.message.edit_text(
-                "<b>Error</b>\n\nVerification data is missing. Please try signing in again.",
-                reply_markup=SIGNUP_MENU,
-                parse_mode="HTML"
-            )
-            return True
-
-        # 2. Acknowledge and start the concurrent process
-        msg = await callback.message.edit_text(
-            "<b>Verifying Device and Signing In...</b>\n\nAttempting to complete verification and log in.",
-            parse_mode="HTML"
-        )
-        
-        # 3. Execute the two-step process: Verify API call + Retry Login API call
-        res = await verify_device_and_retry_signin(pending_device_id, email, password, user_id)
-
-        # 4. Process the result
-        if res.get("accessToken") and res.get("user"):
-            creds = {"email": email, "password": password}
-            # This calls store_token_and_show_card and updates the message
-            await store_token_and_show_card(msg, res, creds) 
-            state["stage"] = "menu"
-        else:
-            error_msg = res.get("errorMessage", "Unknown error after verification.")
-            
-            await msg.edit_text(
-                f"<b>❌ Sign In Failed After Verification</b>\n\n"
-                f"Error: {error_msg}\n\n"
-                "If you verified the email link, click **Verify Device** again, or click **Re-send Email**.",
-                reply_markup=DEVICE_VERIFY_MENU,
-                parse_mode="HTML"
-            )
 
     elif data == "signup_menu":
         state["stage"] = "menu"
@@ -821,43 +725,20 @@ async def signup_message_handler(message: Message) -> bool:
             parse_mode="HTML"
         )
     elif stage == "signin_password":
-        msg = await message.answer("<b>Signing In...</b>", parse_mode="HTML")
+        msg = await message.answer("<b>Signing In</b>...", parse_mode="HTML")
+        # try_signin will generate/get device_info for this specific email
         res = await try_signin(state["signin_email"], text, user_id)
-        
-        # Check if device verification is required
-        if res.get("requiresDeviceVerification"):
-        # Store verification info for later use
-            state["pending_device_id"] = res.get("pendingDeviceId")
-            state["signin_email"] = res.get("email")
-            state["signin_password"] = text
-            state["stage"] = "verify_device_pending"
-            
-            # Show message with verify button
-            # NOTE: Updated to use the new DEVICE_VERIFY_MENU
-            await msg.edit_text(
-                "<b>⚠️ New Device Detected</b>\n\n"
-                "A verification email has been sent to:\n"
-                f"<code>{res.get('email')}</code>\n\n"
-                "Please verify the device from the email link, then click the button below.",
-                reply_markup=DEVICE_VERIFY_MENU,
-                parse_mode="HTML"
-            )
-        
-        # Successful login
-        elif res.get("accessToken") and res.get("user"):
+        if res.get("accessToken") and res.get("user"):
             creds = {"email": state["signin_email"], "password": text}
             await store_token_and_show_card(msg, res, creds)
-            state["stage"] = "menu"
-        
-        # Login failed
         else:
             error_msg = res.get("errorMessage", "Unknown error.")
             await msg.edit_text(
-                f"<b>❌ Sign In Failed</b>\n\nError: {error_msg}",
+                f"<b>Sign In Failed</b>\n\nError: {error_msg}",
                 reply_markup=SIGNUP_MENU,
                 parse_mode="HTML"
             )
-            state["stage"] = "menu"
+        state["stage"] = "menu"
     else:
         return False
     
@@ -884,7 +765,7 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
     url = "https://api.meeff.com/api/upload/v1"
     payload = {"category": "profile", "count": 1, "locale": "en"}
     headers = {
-        'User-Agent': "okhttp/5.0.0-alpha.14",
+        'User-Agent': "okhttp/5.1.0",
         'Accept-Encoding': "gzip",
         'Content-Type': "application/json; charset=utf-8"
     }
@@ -948,7 +829,7 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
         "interest": "IS000001,IS000002,IS000003,IS000004",
     }
     payload = get_api_payload_with_device_info(base_payload, device_info)
-    headers = {'User-Agent': "okhttp/5.0.0-alpha.14", 'Content-Type': "application/json; charset=utf-8"}
+    headers = {'User-Agent': "okhttp/5.1.0", 'Content-Type': "application/json; charset=utf-8"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -971,8 +852,7 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
 
 async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     """
-    Attempt to sign in with device verification flow.
-    Returns pendingDeviceId if device verification is needed.
+    Attempt to sign in with **throttling and robust error capture**.
     """
     # CRITICAL: Introduce a randomized delay for throttling
     await asyncio.sleep(random.uniform(0.5, 1.5))
@@ -980,122 +860,28 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
-    
-    base_payload = {
-        "provider": "email",
-        "providerId": email,
-        "providerToken": password,
-        "locale": "en"
-    }
+    base_payload = {"provider": "email", "providerId": email, "providerToken": password, "locale": "en"}
     payload = get_api_payload_with_device_info(base_payload, device_info)
-    headers = {
-        'User-Agent': "okhttp/5.1.0",
-        'Content-Type': "application/json; charset=utf-8"
-    }
-    
+    headers = {'User-Agent': "okhttp/5.1.0", 'Content-Type': "application/json; charset=utf-8"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
-                response_data = None
-                
-                try:
-                    response_data = await response.json()
-                except aiohttp.ContentTypeError:
-                    error_text = await response.text()
-                    logger.error(f"Signin failed for {email}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
-                    return {"errorMessage": f"API Rejected Signin (Status {response.status}). Check full logs."}
-                
-                # Successful login
-                if response.status == 200 and response_data.get("accessToken"):
-                    logger.info(f"Signin successful for {email}")
-                    return response_data
-                
-                # Device verification needed (Status 401 and includes pendingDeviceId)
-                if response.status == 401 and response_data.get("pendingDeviceId"):
-                    pending_device_id = response_data.get("pendingDeviceId")
-                    logger.warning(f"Device verification required for {email}. Pending Device ID: {pending_device_id}")
-                    
-                    # Return with flag indicating device needs verification
-                    response_data["requiresDeviceVerification"] = True
-                    response_data["pendingDeviceId"] = pending_device_id
-                    response_data["email"] = email
-                    response_data["password"] = password
-                    return response_data
-                
-                # Other errors
-                logger.error(f"Signin failed for {email}: Status {response.status}, Error: {response_data.get('errorMessage', 'Unknown')}")
-                return response_data
-                
+                if response.status != 200:
+                    try:
+                        resp_json = await response.json()
+                        logger.error(f"Signin failed for {email}: Status {response.status}, Error: {resp_json.get('errorMessage', 'Unknown')}")
+                        return resp_json
+                    except aiohttp.ContentTypeError:
+                        # Handle non-JSON error response
+                        error_text = await response.text()
+                        logger.error(f"Signin failed for {email}: Status {response.status}, Non-JSON Response: {error_text[:200]}")
+                        return {"errorMessage": f"API Rejected Signin (Status {response.status}). Check full logs."}
+
+                return await response.json()
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
         return {"errorMessage": "Failed to sign in due to connection error."}
 
-
-async def verify_device_and_retry_signin(pending_device_id: str, email: str, password: str, telegram_user_id: int) -> Dict:
-    """
-    Verify the device and retry signin.
-    Called after user clicks 'Verify Device' button.
-    """
-    device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
-    logger.warning(f"VERIFYING DEVICE: {pending_device_id} for email {email}")
-    
-    headers = {
-        'User-Agent': "okhttp/5.1.0",
-        'Content-Type': "application/json; charset=utf-8"
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Step 1: Verify the device (using the pendingDeviceId)
-            verify_url = f"https://api.meeff.com/user/pendingdevice/{pending_device_id}/verify/v1"
-            verify_payload = {"locale": "en"}
-            # The verify API call requires the device info payload to link the verification to the current client
-            verify_payload = get_api_payload_with_device_info(verify_payload, device_info) 
-            
-            async with session.post(verify_url, json=verify_payload, headers=headers) as verify_response:
-                try:
-                    # Meeff's verify endpoint can return a 200/401 and sometimes non-JSON. 
-                    # We proceed to retry signin regardless of the body here, as the verification is done via email.
-                    try:
-                        verify_data = await verify_response.json()
-                        logger.info(f"Device verification response: Status {verify_response.status}, Data: {verify_data}")
-                    except aiohttp.ContentTypeError:
-                        verify_text = await verify_response.text()
-                        logger.warning(f"Device verification returned non-JSON: {verify_text[:200]}")
-                except Exception as e:
-                    logger.error(f"Error processing verify response: {e}")
-                
-                # Add delay before retry
-                await asyncio.sleep(random.uniform(0.5, 1.5))
-                
-                # Step 2: Retry signin (The device should now be verified on the server)
-                signin_url = "https://api.meeff.com/user/login/v4"
-                base_payload = {
-                    "provider": "email",
-                    "providerId": email,
-                    "providerToken": password,
-                    "locale": "en"
-                }
-                signin_payload = get_api_payload_with_device_info(base_payload, device_info)
-                
-                async with session.post(signin_url, json=signin_payload, headers=headers) as signin_response:
-                    try:
-                        signin_data = await signin_response.json()
-                        
-                        if signin_response.status == 200 and signin_data.get("accessToken"):
-                            logger.info(f"Signin successful after device verification for {email}")
-                            return signin_data
-                        else:
-                            logger.error(f"Signin still failed after verification: {signin_data.get('errorMessage', 'Unknown')}")
-                            return signin_data
-                    except aiohttp.ContentTypeError:
-                        error_text = await signin_response.text()
-                        logger.error(f"Retry signin returned non-JSON: {error_text[:200]}")
-                        return {"errorMessage": "API error during retry signin"}
-    
-    except Exception as e:
-        logger.error(f"Error during device verification: {e}")
-        return {"errorMessage": "Failed to verify device due to connection error."}
 async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict) -> None:
     """Store the access token and display the user card."""
     access_token = login_result.get("accessToken")
