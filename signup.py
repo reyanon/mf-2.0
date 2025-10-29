@@ -725,11 +725,11 @@ async def signup_message_handler(message: Message) -> bool:
             parse_mode="HTML"
         )
     elif stage == "signin_password":
-    msg = await message.answer("<b>Signing In...</b>", parse_mode="HTML")
-    res = await try_signin(state["signin_email"], text, user_id)
-    
-    # Check if device verification is required
-    if res.get("requiresDeviceVerification"):
+        msg = await message.answer("<b>Signing In...</b>", parse_mode="HTML")
+        res = await try_signin(state["signin_email"], text, user_id)
+        
+        # Check if device verification is required
+        if res.get("requiresDeviceVerification"):
         # Store verification info for later use
         state["pending_device_id"] = res.get("pendingDeviceId")
         state["signin_email"] = res.get("email")
