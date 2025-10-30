@@ -17,7 +17,7 @@ def generate_push_token() -> str:
 
 # --- Android Configuration based on user's raw request ---
 ANDROID_MODELS = ["Infinix X6858"]
-ANDROID_OS_VERSIONS = ["Android v15"] # The 'os' value
+ANDROID_OS_VERSIONS = ["Android v15"]
 ANDROID_APP_VERSIONS = ["6.7.1", "6.7.0"]
 # The specific, complex device string from the user's request
 DEVICE_STRING_TEMPLATE = (
@@ -38,41 +38,43 @@ def generate_device_info() -> Dict[str, str]:
 
     return {
         "device_model": model, 
-        "device_name": "Infinix note 50", # A plausible name for the model
-        # The key is kept as 'ios_version' but stores Android OS string for simplicity 
-        # as it's only used internally to construct 'device_info_header' and 'os'
-        "ios_version": os_version, 
+        "device_name": "Infinix note 50",
+        "os_version": os_version,
         "app_version": app_version, 
         "device_unique_id": generate_device_unique_id(),
         "push_token": push_token, 
         "device_info_header": f"{model}-{os_version}-{app_version}",
         "device_string": device_string,
         "os": os_version, 
-        "platform": "android", # Changed from 'ios'
+        "platform": "android",
         "device_language": "en", 
         "device_region": "US", 
-        "sim_region": "PK", # Changed from 'US'
-        "device_gmt_offset": "+0500", # Changed from '-0500'
+        "sim_region": "PK",
+        "device_gmt_offset": "+0500",
         "device_rooted": 0, 
         "device_emulator": 0
     }
 
 def get_headers_with_device_info(base_headers: Dict[str, str], device_info: Dict[str, str]) -> Dict[str, str]:
-    """Injects device info into API request headers. (X-Device-Info is not needed for this Android config)"""
-    # The X-Device-Info header is an iOS-specific header for some meeff endpoints.
-    # Since the raw request provided by the user did not include it, we return base headers.
+    """Injects device info into API request headers."""
     return base_headers.copy()
 
 def get_api_payload_with_device_info(base_payload: Dict, device_info: Dict[str, str]) -> Dict:
     """Injects device info into an API request payload."""
     payload = base_payload.copy()
     payload.update({
-        "os": device_info["os"], "platform": device_info["platform"],
-        "device": device_info["device_string"], "appVersion": device_info["app_version"],
-        "deviceUniqueId": device_info["device_unique_id"], "pushToken": device_info["push_token"],
-        "deviceLanguage": device_info["device_language"], "deviceRegion": device_info["device_region"],
-        "simRegion": device_info["sim_region"], "deviceGmtOffset": device_info["device_gmt_offset"],
-        "deviceRooted": device_info["device_rooted"], "deviceEmulator": device_info["device_emulator"]
+        "os": device_info["os"], 
+        "platform": device_info["platform"],
+        "device": device_info["device_string"], 
+        "appVersion": device_info["app_version"],
+        "deviceUniqueId": device_info["device_unique_id"], 
+        "pushToken": device_info["push_token"],
+        "deviceLanguage": device_info["device_language"], 
+        "deviceRegion": device_info["device_region"],
+        "simRegion": device_info["sim_region"], 
+        "deviceGmtOffset": device_info["device_gmt_offset"],
+        "deviceRooted": device_info["device_rooted"], 
+        "deviceEmulator": device_info["device_emulator"]
     })
     return payload
 
@@ -102,13 +104,25 @@ async def get_device_info_for_email(telegram_user_id: int, email: str) -> Option
 
 async def get_or_create_device_info_for_email(telegram_user_id: int, email: str) -> Dict[str, str]:
     """Get existing device info for email or create a new one asynchronously."""
-    device_info = await get_device_info_for_email(telegram_user_id, email)
-    if not device_info:
-        user_db = _get_user_collection(telegram_user_id)
-        if await user_db.find_one({"type": "device_info"}) is None:
-            await user_db.insert_one({"type": "device_info", "data": {}})
-        device_info = generate_device_info()
-        await store_device_info_for_email(telegram_user_id, email, device_info)
+    await _ensure_user_collection_exists(telegram_user_id)
+    sanitized_email = _sanitize_email_for_key(email)
+    user_db = _get_user_collection(telegram_user_id)
+    
+    # Try to get existing device info
+    device_doc = await user_db.find_one({"type": "device_info"})
+    if device_doc and "data" in device_doc and sanitized_email in device_doc["data"]:
+        return device_doc["data"][sanitized_email]
+    
+    # Create new device info atomically using upsert
+    device_info = generate_device_info()
+    await user_db.update_one(
+        {"type": "device_info"},
+        {
+            "$set": {f"data.{sanitized_email}": device_info},
+            "$setOnInsert": {"type": "device_info", "data": {}}
+        },
+        upsert=True
+    )
     return device_info
 
 async def store_device_info_for_token(telegram_user_id: int, token: str, device_info: Dict[str, str]):
