@@ -108,23 +108,22 @@ async def get_or_create_device_info_for_email(telegram_user_id: int, email: str)
     sanitized_email = _sanitize_email_for_key(email)
     user_db = _get_user_collection(telegram_user_id)
     
-    # Try to get existing device info
+    # Try to get existing device info (READ)
     device_doc = await user_db.find_one({"type": "device_info"})
     if device_doc and "data" in device_doc and sanitized_email in device_doc["data"]:
         return device_doc["data"][sanitized_email]
     
-    # Create new device info atomically using upsert
+    # Create new device info atomically using upsert (WRITE)
     device_info = generate_device_info()
     await user_db.update_one(
         {"type": "device_info"},
         {
             "$set": {f"data.{sanitized_email}": device_info},
-            "$setOnInsert": {"type": "device_info", "data": {}}
+            "$setOnInsert": {"type": "device_info"}  # <-- FIX: Removed "data": {}
         },
         upsert=True
     )
     return device_info
-
 async def store_device_info_for_token(telegram_user_id: int, token: str, device_info: Dict[str, str]):
     """Store device info for a specific token asynchronously."""
     await _ensure_user_collection_exists(telegram_user_id)
