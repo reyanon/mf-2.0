@@ -191,7 +191,7 @@ async def check_email_exists(email: str) -> Tuple[bool, str]:
     url = "https://api.meeff.com/user/checkEmail/v1"
     payload = {"email": email, "locale": "en"}
     headers = {
-        'User-Agent': "okhttp/5.1.0",
+        'User-Agent': "okhttp/5.0.0-alpha.14",
         'Accept-Encoding': "gzip",
         'Content-Type': "application/json; charset=utf-8"
     }
@@ -521,10 +521,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             )
             return True
             
-        # --- FIX: Acknowledge the callback immediately to prevent Telegram timeout ---
-        await callback.answer("Verification started, please wait. This may take a moment per account.")
-        # -------------------------------------------------------------------------
-            
         await callback.message.edit_text("<b>Verifying Accounts Concurrently...</b>", parse_mode="HTML")
         
         verified = state.get("verified_accounts", [])
@@ -550,10 +546,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
                 
                 # DB operations remain sequential to ensure atomic updates per account
                 await set_token(user_id, token, acc["name"], acc["email"])
-                
-                # --- CRITICAL: RUN APP SETUP SEQUENCE HERE ---
-                await run_app_setup_sequence(token, acc["email"]) # Pass email to get device_info with push token
-                
                 await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
                 
                 res["user"].update({
@@ -669,7 +661,6 @@ async def signup_message_handler(message: Message) -> bool:
             state["stage"] = "menu"
             await message.answer("<b>Configuration Saved!</b>", parse_mode="HTML")
             await signup_settings_command(message)
-                
         await set_signup_config(user_id, config)
     elif stage == "ask_num_accounts":
         try:
@@ -774,7 +765,7 @@ async def meeff_upload_image(img_bytes: bytes) -> Optional[str]:
     url = "https://api.meeff.com/api/upload/v1"
     payload = {"category": "profile", "count": 1, "locale": "en"}
     headers = {
-        'User-Agent': "okhttp/5.1.0",
+        'User-Agent': "okhttp/5.0.0-alpha.14",
         'Accept-Encoding': "gzip",
         'Content-Type': "application/json; charset=utf-8"
     }
@@ -813,7 +804,7 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
     Attempt to sign up a new user with **throttling and robust error capture**.
     """
     # CRITICAL: Introduce a randomized delay for throttling
-    await asyncio.sleep(random.uniform(3.0, 8.0))
+    await asyncio.sleep(random.uniform(0.5, 1.5))
     
     url = "https://api.meeff.com/user/register/email/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, state["email"])
@@ -838,7 +829,7 @@ async def try_signup(state: Dict, telegram_user_id: int) -> Dict:
         "interest": "IS000001,IS000002,IS000003,IS000004",
     }
     payload = get_api_payload_with_device_info(base_payload, device_info)
-    headers = {'User-Agent': "okhttp/5.1.0", 'Content-Type': "application/json; charset=utf-8"}
+    headers = {'User-Agent': "okhttp/5.0.0-alpha.14", 'Content-Type': "application/json; charset=utf-8"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -864,14 +855,14 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     Attempt to sign in with **throttling and robust error capture**.
     """
     # CRITICAL: Introduce a randomized delay for throttling
-    await asyncio.sleep(random.uniform(3.0, 8.0))
+    await asyncio.sleep(random.uniform(0.5, 1.5))
     
     url = "https://api.meeff.com/user/login/v4"
     device_info = await get_or_create_device_info_for_email(telegram_user_id, email)
     logger.warning(f"SIGN IN using Device ID: {device_info.get('device_unique_id')} for email {email}")
     base_payload = {"provider": "email", "providerId": email, "providerToken": password, "locale": "en"}
     payload = get_api_payload_with_device_info(base_payload, device_info)
-    headers = {'User-Agent': "okhttp/5.1.0", 'Content-Type': "application/json; charset=utf-8"}
+    headers = {'User-Agent': "okhttp/5.0.0-alpha.14", 'Content-Type': "application/json; charset=utf-8"}
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
@@ -890,102 +881,6 @@ async def try_signin(email: str, password: str, telegram_user_id: int) -> Dict:
     except Exception as e:
         logger.error(f"Error during signin for {email}: {e}")
         return {"errorMessage": "Failed to sign in due to connection error."}
-
-async def run_app_setup_sequence(token: str, email: str) -> bool:
-    """
-    Executes the post-login sequence of API calls (init, blindmatch, dashboard fetches, ads)
-    to fully 'warm up' the session and mimic a real app launch.
-    """
-    device_info = await get_or_create_device_info_for_email(None, email) # Get device info for push token and model
-    
-    base_headers = {
-        'User-Agent': "okhttp/5.1.0", 
-        'meeff-access-token': token,
-        'Accept-Encoding': "gzip",
-        'Content-Type': "application/json; charset=utf-8"
-    }
-    
-    # ----------------------------------------------------------------------
-    # CRITICAL EXTERNAL AD/MEDIATION CALLS (Requires custom headers/User-Agent)
-    # These must be included to avoid behavioral detection
-    # ----------------------------------------------------------------------
-    
-    # User-Agent for Dalvik/WebView traffic (used by Ad/SSP hosts)
-    ad_user_agent = f"Dalvik/2.1.0 (Linux; U; Android 15; {device_info['device_model']} Build/AP3A.240905.015.A2)"
-    
-    external_calls = [
-        # SSP Request (adpies.com) - Simulates fetching an ad offer
-        ("POST", "https://ssp.adpies.com/ssp/request", {
-            'User-Agent': ad_user_agent,
-            'Content-Type': "application/x-www-form-urlencoded"
-        }, "dtype=2&ostype=1&carrier=Jazz&connectiontype=2&cc=pk&lo=en&make=INFINIX&mo=Infinix%20X6858&mid=5c29bbf88aec49234f2b4560&sid=6718c3648c8d1d43785b9700&udidtype=1&dnt=0&osver=15&sdkver=011500&bundle=com.noyesrun.meeff.kr&ver=6.7.1&dw=1080&dh=2293&vs=1&bidfloor=0.2&bidfloorcur=USD&secure=1&format=json&wv_clk_v2=1"),
-        
-        # Ad Mediation Request (adxcorp.kr) - Simulates checking ad availability
-        ("GET", f"https://api.mediation.adxcorp.kr/v1/mediations?dtype=2&ostype=1&carrier=Jazz&connectiontype=2&cc=pk&lo=en&make=INFINIX&mo=Infinix%20X6858&appId=61ea97e3cb8c67000100001a&adUnitId=682aee65b97d3faadf063f1d&udidtype=1&dnt=0&osver=15&sdkver=020800&bundle=com.noyesrun.meeff.kr&ver=6.7.1&dw=1080&dh=2293&vs=1&secure=1&format=json&wv_clk_v2=1&uuid={device_info['device_unique_id']}", {
-            'User-Agent': ad_user_agent,
-            'Accept-Encoding': "gzip"
-        }, None),
-    ]
-
-    # MEFF CORE ENDPOINTS SEQUENCE
-    meeff_core_calls = [
-        # 1. Init call 
-        ("POST", "https://api.meeff.com/api/init/v2", base_headers, {"platform":"android", "version":"6.7.1", "locale":"en"}),
-        
-        # 2. Push Token Registration (Critical for session validity)
-        ("POST", "https://api.meeff.com/user/updatePushInfo/v1", base_headers, {
-            "platform": "android", 
-            "pushToken": device_info["push_token"], 
-            "locale": "en"
-        }),
-        
-        # 3. Blindmatch login (Feature activation)
-        ("POST", "https://api.meeff.com/blindmatch/login/v2", base_headers, {"locale":"en"}),
-        
-        # 4. Dashboard Loads (GET requests)
-        ("GET", "https://api.meeff.com/user/blockedbyuser/v1?locale=en", base_headers, None),
-        ("GET", "https://api.meeff.com/user/checkPasswordUpdate/v1?locale=en", base_headers, None),
-        ("GET", "https://api.meeff.com/misc/findmatching/count/v1?locale=en", base_headers, None),
-        ("GET", "https://api.meeff.com/facetalk/vibemeet/history/count/v1?locale=en", base_headers, None), # Added based on log
-        ("GET", "https://api.meeff.com/lounge/dashboard/v1?locale=en", base_headers, None),
-        ("GET", "https://api.meeff.com/chatroom/dashboard/v1?locale=en", base_headers, None),
-        ("GET", "https://api.meeff.com/user/profile/visit/list/v1?pageSize=1&lastId&isVisiable=false&locale=en", base_headers, None),
-        ("GET", "https://api.meeff.com/today/list/v1?limit=100&page=1&locale=en", base_headers, None),
-        
-        # 5. FINAL: Explore users to load the main screen (using hardcoded Phoenix location)
-        ("GET", "https://api.meeff.com/user/explore/v2?lng=-112.0613784790039&unreachableUserIds=&lat=33.437198638916016&locale=en", base_headers, None)
-    ]
-
-    async with aiohttp.ClientSession() as session:
-        # Run External/Ad calls first
-        for method, url, headers, data in external_calls:
-            await asyncio.sleep(random.uniform(0.1, 0.5))
-            try:
-                if method == "POST":
-                    # Send as form-urlencoded string
-                    async with session.post(url, headers=headers, data=data) as response:
-                        await response.read()
-                elif method == "GET":
-                    async with session.get(url, headers=headers) as response:
-                        await response.read()
-            except Exception as e:
-                logging.warning(f"Failed external call to {url.split('//')[1].split('/')[0]}: {e}")
-                continue
-
-        # Run Meff Core Sequence
-        for method, url, headers, body in meeff_core_calls:
-            await asyncio.sleep(random.uniform(0.3, 1.0))
-            try:
-                if method == "POST":
-                    async with session.post(url, headers=headers, json=body) as response:
-                        await response.read()
-                elif method == "GET":
-                    async with session.get(url, headers=headers) as response:
-                        await response.read()
-            except Exception as e:
-                logging.warning(f"Failed core setup call to {url.split('//')[1]}: {e}")
-                continue
-    return True
 
 async def store_token_and_show_card(msg_obj: Message, login_result: Dict, creds: Dict) -> None:
     """Store the access token and display the user card."""
