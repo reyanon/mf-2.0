@@ -410,7 +410,7 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             state["stage"] = "ask_num_accounts"
             user_signup_states[user_id] = state
             await callback.message.edit_text(
-                "<b>Account Creation</b>\n\nEnter the number of accounts to create (1-30):",
+                "<b>Account Creation</b>\n\nEnter the number of accounts to create (1-100):",
                 reply_markup=BACK_TO_SIGNUP,
                 parse_mode="HTML"
             )
@@ -665,7 +665,7 @@ async def signup_message_handler(message: Message) -> bool:
     elif stage == "ask_num_accounts":
         try:
             num = int(text)
-            if not 1 <= num <= 30:
+            if not 1 <= num <= 100:
                 raise ValueError()
             state["num_accounts"] = num
             state["stage"] = "ask_name"
@@ -675,7 +675,7 @@ async def signup_message_handler(message: Message) -> bool:
                 parse_mode="HTML"
             )
         except ValueError:
-            await message.answer("Invalid number (1-30). Please try again:", parse_mode="HTML")
+            await message.answer("Invalid number (1-100). Please try again:", parse_mode="HTML")
             return True
     elif stage == "ask_name":
         state["name"] = text
