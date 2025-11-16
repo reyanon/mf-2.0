@@ -10,7 +10,7 @@ from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, B
 from collections import defaultdict
 from aiogram.exceptions import TelegramBadRequest
 
-# Import custom modules from the new async db.py
+
 from db import (
     set_token, get_tokens, set_current_account, get_current_account, delete_token,
     set_user_filters, get_user_filters, get_all_user_filters, set_spam_filter, get_spam_filter,
@@ -20,7 +20,8 @@ from db import (
     list_all_collections, get_collection_summary, connect_to_collection,
     rename_user_collection, transfer_to_user, get_current_collection_info,
     get_spam_record_count, clear_spam_records,
-    get_batches, create_batch, toggle_batch_status, set_batch_filter, get_batch_by_name, auto_organize_batches
+    get_batches, create_batch, toggle_batch_status, set_batch_filter, get_batch_by_name, # auto_organize_batches removed
+    add_token_to_auto_batch 
 )
 # Make sure these other local modules are compatible if they also perform I/O
 from lounge import send_lounge, send_lounge_all_tokens
@@ -32,11 +33,11 @@ from signup import signup_command, signup_callback_handler, signup_message_handl
 from friend_requests import run_requests, process_all_tokens, user_states, stop_markup
 
 # --- Configuration & Setup ---
-#API_TOKEN = "8298119289:AAGZxvWbBswHf1R-FzSURVpDalbx_96ubyc"
 API_TOKEN = "7916536914:AAHwtvO8hfGl2U4xcfM1fAjMLNypPFEW5JQ"
 ADMIN_USER_IDS = {7405203657, 7725409374, 7691399254, 7795345443}
 TEMP_PASSWORD = "11223344"
 TARGET_CHANNEL_ID = -1002610862940
+ACCOUNTS_PER_PAGE = 12 # New constant for pagination
 
 password_access: Dict[int, datetime] = {}
 db_operation_states: Dict[int, Dict[str, str]] = defaultdict(dict)
@@ -58,7 +59,7 @@ async def get_settings_menu(user_id: int) -> InlineKeyboardMarkup:
     spam_filters = await get_all_spam_filters(user_id)
     any_spam_on = any(spam_filters.values())
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts"), InlineKeyboardButton(text="Meeff Filters", callback_data="show_filters")],
+        [InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts|0"), InlineKeyboardButton(text="Meeff Filters", callback_data="show_filters")],
         [InlineKeyboardButton(text="Batch Management", callback_data="batch_management")],
         [InlineKeyboardButton(text=f"Spam Filters: {'ON' if any_spam_on else 'OFF'}", callback_data="spam_filter_menu")],
         [InlineKeyboardButton(text="DB Settings", callback_data="db_settings"), InlineKeyboardButton(text="Back", callback_data="back_to_menu")]
@@ -99,8 +100,12 @@ async def get_spam_filter_menu(user_id: int) -> InlineKeyboardMarkup:
         ]
     ])
 
-def get_account_view_menu(account_idx: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Delete Account", callback_data=f"confirm_delete_{account_idx}"), InlineKeyboardButton(text="Back", callback_data="manage_accounts")]])
+def get_account_view_menu(account_idx: int, page_idx: int) -> InlineKeyboardMarkup:
+    # MODIFIED: Added page_idx to return button
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Delete Account", callback_data=f"confirm_delete_{account_idx}|{page_idx}")],
+        [InlineKeyboardButton(text="Back", callback_data=f"manage_accounts|{page_idx}")]
+    ])
 
 def get_confirmation_menu(action_type: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Yes", callback_data=f"confirm_{action_type}"), InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")]])
@@ -111,8 +116,9 @@ async def get_batch_management_menu(user_id: int) -> InlineKeyboardMarkup:
 
     buttons = []
 
-    if not batches and tokens:
-        buttons.append([InlineKeyboardButton(text="Auto-Organize Batches (10 per batch)", callback_data="auto_organize_batches")])
+    # Removed manual Auto-Organize/Reorganize buttons for automatic batching
+    # if not batches and tokens:
+    #     buttons.append([InlineKeyboardButton(text="Auto-Organize Batches (10 per batch)", callback_data="auto_organize_batches")])
 
     for batch in batches:
         batch_name = batch.get("name", "Unnamed")
@@ -127,8 +133,9 @@ async def get_batch_management_menu(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Filter", callback_data=f"batch_filter_{batch_name}")
         ])
 
-    if batches:
-        buttons.append([InlineKeyboardButton(text="Reorganize Batches", callback_data="auto_organize_batches")])
+    # Removed manual Reorganize button
+    # if batches:
+    #     buttons.append([InlineKeyboardButton(text="Reorganize Batches", callback_data="auto_organize_batches")])
 
     buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
 
@@ -195,8 +202,9 @@ async def signup_settings_cmd(message: Message):
 async def signin_cmd(message: Message):
     if not has_valid_access(message.chat.id): return await message.reply("You are not authorized.")
     from signup import user_signup_states, BACK_TO_SIGNUP
-    user_signup_states[message.from_user.id] = {"stage": "signin_email"}
-    await message.reply("<b>Sign In</b>\nPlease enter your email address:", reply_markup=BACK_TO_SIGNUP, parse_mode="HTML")
+    # Redirect signin command to the unified email input stage
+    user_signup_states[message.from_user.id] = {"stage": "multi_signin_emails"}
+    await message.reply("<b>Sign In (Single or Multi)</b>\n\nEnter one or more emails:", reply_markup=BACK_TO_SIGNUP, parse_mode="HTML")
 
 @router.message(Command("skip"))
 async def skip_command(message: Message):
@@ -473,7 +481,7 @@ async def add_person_command(message: Message):
     headers = {"meeff-access-token": token, "Connection": "keep-alive"}
     
     try:
-         async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers) as response:
                 data = await response.json()
                 if data.get("errorCode") == "LikeExceeded":
@@ -485,6 +493,7 @@ async def add_person_command(message: Message):
     except Exception as e:
         logging.error(f"Error adding person by ID: {e}")
         await message.reply("An error occurred while trying to add this person.")
+
 @router.message()
 async def handle_new_token(message: Message):
     if message.text and message.text.startswith("/"): return
@@ -516,31 +525,45 @@ async def handle_new_token(message: Message):
         token = token_data[0]
         if len(token) < 100: return await message.reply("Invalid token format.")
 
-
         
         # The message will be used as the status update for saving
         status_msg = await message.reply("<b>Saving Token...</b>", parse_mode="HTML")
 
         account_name = token_data[1] if len(token_data) > 1 else f"Account {len(await get_tokens(user_id)) + 1}"
         
-        # Save the token
-        await set_token(user_id, token, account_name)
+        # Save the token and get its index
+        token_index = await set_token(user_id, token, account_name)
+        
+        # AUTOMATIC BATCH ASSIGNMENT
+        if token_index != -1:
+            await add_token_to_auto_batch(user_id, token_index)
         
         # Report success without verification status
         await status_msg.edit_text(f"✅ <b>Token Saved</b> and named '<code>{html.escape(account_name)}</code>'.", parse_mode="HTML")
 
-async def show_manage_accounts_menu(callback_query: CallbackQuery):
+async def show_manage_accounts_menu(callback_query: CallbackQuery, page_idx: int = 0):
     user_id = callback_query.from_user.id
     tokens = await get_tokens(user_id)
+    total_accounts = len(tokens)
     current_token = await get_current_account(user_id)
 
     if not tokens:
         return await callback_query.message.edit_text("<b>No Accounts Found</b>...", reply_markup=back_markup, parse_mode="HTML")
 
+    # Calculate page range
+    total_pages = (total_accounts + ACCOUNTS_PER_PAGE - 1) // ACCOUNTS_PER_PAGE
+    page_idx = max(0, min(page_idx, total_pages - 1)) # Ensure page_idx is valid
+    start_idx = page_idx * ACCOUNTS_PER_PAGE
+    end_idx = min(start_idx + ACCOUNTS_PER_PAGE, total_accounts)
+
+    visible_tokens = tokens[start_idx:end_idx]
     all_filters = await get_all_user_filters(user_id)
 
     buttons = []
-    for i, tok in enumerate(tokens):
+    for i, tok in enumerate(visible_tokens):
+        # Global index in the full tokens list
+        global_idx = start_idx + i 
+        
         is_current = "🔹" if tok['token'] == current_token else "▫️"
         
         token_filters = all_filters.get(tok['token'], {})
@@ -549,18 +572,37 @@ async def show_manage_accounts_menu(callback_query: CallbackQuery):
         account_name = html.escape(tok['name'][:15])
         display_name = f"{account_name} ({nationality_code})" if nationality_code else account_name
 
+        # Pass page_idx in callbacks to maintain the view state
         buttons.append([
-            InlineKeyboardButton(text=f"{is_current} {display_name}", callback_data=f"set_account_{i}"),
-            InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"toggle_status_{i}"),
-            InlineKeyboardButton(text="View", callback_data=f"view_account_{i}")
+            InlineKeyboardButton(text=f"{is_current} {display_name}", callback_data=f"set_account_{global_idx}|{page_idx}"),
+            InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"toggle_status_{global_idx}|{page_idx}"),
+            InlineKeyboardButton(text="View", callback_data=f"view_account_{global_idx}|{page_idx}")
         ])
+
+    # --- Pagination Buttons ---
+    pagination_row = []
+    if page_idx > 0:
+        pagination_row.append(InlineKeyboardButton(text="« Previous", callback_data=f"manage_accounts|{page_idx - 1}"))
+
+    pagination_row.append(InlineKeyboardButton(text=f"{page_idx + 1}/{total_pages}", callback_data="noop_page"))
+
+    if page_idx < total_pages - 1:
+        pagination_row.append(InlineKeyboardButton(text="Next »", callback_data=f"manage_accounts|{page_idx + 1}"))
+    
+    if pagination_row:
+        buttons.append(pagination_row)
+
     buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
     
+    # Text update to show pagination info
+    menu_text = f"<b>Manage Accounts (Page {page_idx + 1}/{total_pages})</b>\nCurrently selected: {'Yes' if current_token else 'No'}"
+
     try:
-        await callback_query.message.edit_text(f"<b>Manage Accounts</b>\nCurrently selected: {'Yes' if current_token else 'No'}", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+        await callback_query.message.edit_text(menu_text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
     except TelegramBadRequest as e:
         if "message is not modified" not in e.message: logger.error(f"Error editing message: {e}")
         await callback_query.answer()
+
 
 # ----------------- NEW: Show accounts inside a batch using Manage Accounts layout -----------------
 async def show_batch_accounts_menu(callback_query: CallbackQuery, batch_name: str):
@@ -622,11 +664,27 @@ async def show_batch_accounts_menu(callback_query: CallbackQuery, batch_name: st
 async def callback_handler(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     data = callback_query.data
+    
+    # --- PAGINATION LOGIC EXTRACTION ---
+    page_idx = 0
+    original_data = data # Store original data for specific checks
+    
+    if "|" in data and not data.startswith(("batch_select|", "batch_toggle|", "batch_view|")):
+        data_parts = data.split("|")
+        try:
+            # Check if the last part is numeric (the page index)
+            if len(data_parts) > 1 and data_parts[-1].isdigit():
+                page_idx = int(data_parts[-1])
+                data = "|".join(data_parts[:-1]) # Use the rest as the action
+        except ValueError:
+            pass # Should not happen if isdigit() is checked
+
     if await signup_callback_handler(callback_query): return
     if not has_valid_access(user_id): return await callback_query.answer("You are not authorized.")
     
     state = user_states.setdefault(user_id, {})
     
+    # --- MAIN MENU ITEMS ---
     if data == "db_settings":
         current_info = await get_current_collection_info(user_id)
         info_text = f"<b>DB:</b> <code>{html.escape(current_info['collection_name'])}</code>\nAccounts: {current_info['summary'].get('tokens_count', 0)}" if current_info["exists"] else "No database found."
@@ -637,7 +695,7 @@ async def callback_handler(callback_query: CallbackQuery):
         await callback_query.message.edit_text(f"<b>{prompts[data]}:</b>", parse_mode="HTML")
     elif data == "db_view":
         collections = await list_all_collections()
-        text = "\n\n".join([f"<b>{i}.</b> <code>{html.escape(c['collection_name'])}</code>\n  Accounts: {c['summary'].get('tokens_count', 0)}" for i, c in enumerate(collections[:10], 1)]) or "No Collections Found."
+        text = "\n\n".join([f"<b>{i}.</b> <code>{html.escape(c['collection_name'])}</code>\n  Accounts: {c['summary'].get('tokens_count', 0)}" for i, c in enumerate(collections[:10], 1)]) or "No Collections Found."
         await callback_query.message.edit_text(text, reply_markup=get_db_settings_menu(), parse_mode="HTML")
     elif data in ("unsub_current", "unsub_all"):
         confirm_text, count = ("current account", 1) if data == "unsub_current" else (f"all {len(await get_active_tokens(user_id))} active accounts", -1)
@@ -663,51 +721,72 @@ async def callback_handler(callback_query: CallbackQuery):
         await callback_query.message.edit_text("<b>Filter Settings</b>", reply_markup=await get_meeff_filter_main_keyboard(user_id), parse_mode="HTML")
     elif data in ("toggle_request_filter", "meeff_filter_main") or data.startswith(("account_filter_", "account_gender_", "account_age_", "account_nationality_")):
         await set_account_filter(callback_query)
+    
+    # --- ACCOUNT MANAGEMENT & PAGINATION ---
     elif data == "manage_accounts":
-        await show_manage_accounts_menu(callback_query)
+        # page_idx is already extracted if present in original_data
+        await show_manage_accounts_menu(callback_query, page_idx)
+        
     elif data.startswith("view_account_"):
-        idx = int(data.split("_")[-1])
+        # idx is already extracted in the data
+        try: idx = int(data.split("_")[-1])
+        except ValueError: return await callback_query.answer("Invalid account index.", show_alert=True)
         tokens = await get_tokens(user_id)
         if 0 <= idx < len(tokens):
             token_obj = tokens[idx]
             info_card = await get_info_card(user_id, token_obj['token'])
             details = f"<b>Name:</b> <code>{html.escape(token_obj.get('name', 'N/A'))}</code>\n<b>Status:</b> {'Active' if token_obj.get('active', True) else 'Inactive'}\n\n"
             details += info_card if info_card else "No profile card found."
-            await callback_query.message.edit_text(details, reply_markup=get_account_view_menu(idx), parse_mode="HTML", disable_web_page_preview=True)
+            # Pass page_idx to the view menu
+            await callback_query.message.edit_text(details, reply_markup=get_account_view_menu(idx, page_idx), parse_mode="HTML", disable_web_page_preview=True)
+            
     elif data.startswith("confirm_delete_"):
-        idx = int(data.split("_")[-1])
+        # idx is already extracted in the data
+        try: idx = int(data.split("_")[-1])
+        except ValueError: return await callback_query.answer("Invalid account index.", show_alert=True)
         tokens = await get_tokens(user_id)
         if 0 <= idx < len(tokens):
-            await callback_query.message.edit_text(f"<b>Confirm Deletion</b> of <code>{html.escape(tokens[idx]['name'])}</code>?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{idx}"), InlineKeyboardButton(text="Cancel", callback_data="manage_accounts")]]), parse_mode="HTML")
+            # Pass page_idx to the final delete button
+            await callback_query.message.edit_text(f"<b>Confirm Deletion</b> of <code>{html.escape(tokens[idx]['name'])}</code>?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Yes, Delete", callback_data=f"delete_account_{idx}|{page_idx}"), InlineKeyboardButton(text="Cancel", callback_data=f"manage_accounts|{page_idx}")]]) , parse_mode="HTML")
+
     elif data.startswith("toggle_status_"):
-        idx = int(data.split("_")[-1])
+        # idx is already extracted in the data
+        try: idx = int(data.split("_")[-1])
+        except ValueError: return await callback_query.answer("Invalid account index.", show_alert=True)
         tokens = await get_tokens(user_id)
         if 0 <= idx < len(tokens):
             await toggle_token_status(user_id, tokens[idx]["token"])
-            await show_manage_accounts_menu(callback_query)
-    elif data == "spam_filter_menu":
-        await callback_query.message.edit_text("<b>Spam Filter Settings</b>", reply_markup=await get_spam_filter_menu(user_id), parse_mode="HTML")
-    elif data.startswith("toggle_spam_"):
-        filter_type = data.split("_")[-1]
-        if filter_type == "all":
-            new_status = not any((await get_all_spam_filters(user_id)).values())
-            for ft in ["chatroom", "request", "lounge"]: await set_individual_spam_filter(user_id, ft, new_status)
-        else:
-            new_status = not await get_individual_spam_filter(user_id, filter_type)
-            await set_individual_spam_filter(user_id, filter_type, new_status)
-        await callback_handler(callback_query.model_copy(update={'data': 'spam_filter_menu'}))
-
-    elif data == "batch_management":
-        await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
-
-    elif data == "auto_organize_batches":
+            # Pass page_idx back to the menu
+            await show_manage_accounts_menu(callback_query, page_idx)
+    
+    elif data.startswith("set_account_"):
+        # idx is already extracted in the data
+        try: idx = int(data.split("_")[-1])
+        except ValueError: return await callback_query.answer("Invalid account index.", show_alert=True)
         tokens = await get_tokens(user_id)
-        if not tokens: return await callback_query.answer("No accounts found to organize.", show_alert=True)
-        num_batches = await auto_organize_batches(user_id)
-        await callback_query.answer(f"Created {num_batches} batches!")
-        await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+        if 0 <= idx < len(tokens):
+            await set_current_account(user_id, tokens[idx]["token"])
+            # Pass page_idx back to the menu
+            await show_manage_accounts_menu(callback_query, page_idx)
+            
+    elif data.startswith("delete_account_"):
+        # idx is already extracted in the data
+        try: idx = int(data.split("_")[-1])
+        except ValueError: return await callback_query.answer("Invalid account index.", show_alert=True)
+        tokens = await get_tokens(user_id)
+        if 0 <= idx < len(tokens):
+            await delete_token(user_id, tokens[idx]["token"])
+            # After deletion, refresh the menu, and pass the current page_idx
+            await show_manage_accounts_menu(callback_query, page_idx)
 
-    # New behavior: open the Batch Manage-Accounts style UI
+    elif data == "noop_page":
+        await callback_query.answer("You are on this page.")
+    
+    # --- BATCH MANAGEMENT ---
+    elif data == "batch_management":
+        await callback_query.message.edit_text("<b>Batch Management</b>", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+    # Removed auto_organize_batches logic
+    
     elif data.startswith("view_batch_"):
         batch_name = data.replace("view_batch_", "")
         await show_batch_accounts_menu(callback_query, batch_name)
@@ -715,7 +794,7 @@ async def callback_handler(callback_query: CallbackQuery):
     elif data.startswith("batch_select|"):
         # Format: batch_select|{batch_name}|{global_index}
         try:
-            _, batch_name, idx_str = data.split("|", 2)
+            _, batch_name, idx_str = original_data.split("|", 2)
             idx = int(idx_str)
         except Exception:
             return await callback_query.answer("Invalid data.", show_alert=True)
@@ -728,7 +807,7 @@ async def callback_handler(callback_query: CallbackQuery):
     elif data.startswith("batch_toggle|"):
         # Format: batch_toggle|{batch_name}|{global_index}
         try:
-            _, batch_name, idx_str = data.split("|", 2)
+            _, batch_name, idx_str = original_data.split("|", 2)
             idx = int(idx_str)
         except Exception:
             return await callback_query.answer("Invalid data.", show_alert=True)
@@ -741,7 +820,7 @@ async def callback_handler(callback_query: CallbackQuery):
     elif data.startswith("batch_view|"):
         # Format: batch_view|{batch_name}|{global_index}
         try:
-            _, batch_name, idx_str = data.split("|", 2)
+            _, batch_name, idx_str = original_data.split("|", 2)
             idx = int(idx_str)
         except Exception:
             return await callback_query.answer("Invalid data.", show_alert=True)
@@ -766,7 +845,7 @@ async def callback_handler(callback_query: CallbackQuery):
         success = await toggle_batch_status(user_id, batch_name)
         if success:
             await callback_query.answer(f"Toggled batch {batch_name} status!")
-            await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+            await callback_query.message.edit_text("<b>Batch Management</b>", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
         else:
             await callback_query.answer("Failed to toggle batch status.", show_alert=True)
 
@@ -786,14 +865,14 @@ async def callback_handler(callback_query: CallbackQuery):
             success = await set_batch_filter(user_id, batch_name, nat_code)
             if success:
                 await callback_query.answer(f"Filter updated for {batch_name}!")
-                await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+                await callback_query.message.edit_text("<b>Batch Management</b>", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
             else:
                 await callback_query.answer("Failed to update filter.", show_alert=True)
 
-    # --- START: NEW SPAM CLEAR LOGIC ---
+    # --- SPAM CLEAR LOGIC ---
     elif data == "noop_count":
         await callback_query.answer("This is the count of spam-filtered IDs.")
-    
+        
     elif data.startswith("confirm_clear_spam_"):
         category = data.split("_")[-1]
         await callback_query.message.edit_text(
@@ -817,22 +896,10 @@ async def callback_handler(callback_query: CallbackQuery):
             reply_markup=await get_spam_filter_menu(user_id),
             parse_mode="HTML"
         )
-    # --- END: NEW SPAM CLEAR LOGIC ---
 
-    elif data.startswith("set_account_"):
-        idx = int(data.split("_")[-1])
-        tokens = await get_tokens(user_id)
-        if 0 <= idx < len(tokens):
-            await set_current_account(user_id, tokens[idx]["token"])
-            await show_manage_accounts_menu(callback_query)
-    elif data.startswith("delete_account_"):
-        idx = int(data.split("_")[-1])
-        tokens = await get_tokens(user_id)
-        if 0 <= idx < len(tokens):
-            await delete_token(user_id, tokens[idx]["token"])
-            await callback_query.message.edit_text(f"<b>Account Deleted.</b>", reply_markup=back_markup, parse_mode="HTML")
     elif data == "back_to_menu":
         await callback_query.message.edit_text("<b>Meeff Bot Dashboard</b>", reply_markup=start_markup, parse_mode="HTML")
+        
     elif data in ("start", "start_all", "stop", "all_countries"):
         if data in ("start", "start_all", "all_countries") and state.get("running"): return await callback_query.answer("A process is already running!")
         if data == "stop" and not state.get("running"): return await callback_query.answer("No process is running!")
