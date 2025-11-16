@@ -1,8 +1,8 @@
-
 from pymongo import MongoClient
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+from typing import Dict, Optional, Tuple, Any
 
 
 # MongoDB connection using the asynchronous Motor client
@@ -27,7 +27,8 @@ def _get_user_collection(telegram_user_id):
 async def _ensure_user_collection_exists(telegram_user_id):
     """Make sure user collection exists with default documents"""
     user_db = _get_user_collection(telegram_user_id)
-    if await user_db.count_documents({}) == 0:
+    # Check if 'metadata' exists; a simpler check than count_documents({}) == 0
+    if await user_db.count_documents({"type": "metadata"}) == 0:
         await user_db.insert_many([
             {"type": "metadata", "created_at": datetime.datetime.utcnow(), "user_id": telegram_user_id},
             {"type": "tokens", "items": []},
@@ -146,13 +147,24 @@ async def get_info_card(telegram_user_id, token):
         return cards_doc["data"][token].get("info")
     return None
 
-async def set_token(telegram_user_id, token, name, email=None, filters=None, active=True):
+# MODIFIED: set_token now returns the token's index
+async def set_token(telegram_user_id, token, name, email=None, filters=None, active=True) -> int:
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
     
-    token_exists = await user_db.count_documents({"type": "tokens", "items.token": token}) > 0
+    tokens_doc = await user_db.find_one({"type": "tokens"})
+    tokens_list = tokens_doc.get("items", []) if tokens_doc else []
+
+    token_index = -1
     
-    if token_exists:
+    # 1. Check if token already exists to find its index
+    for i, t in enumerate(tokens_list):
+        if t["token"] == token:
+            token_index = i
+            break
+
+    if token_index != -1:
+        # 2. Token exists (Update logic remains the same)
         update_fields = {
             "items.$.name": name,
             "items.$.active": active
@@ -165,6 +177,8 @@ async def set_token(telegram_user_id, token, name, email=None, filters=None, act
             {"$set": update_fields}
         )
     else:
+        # 3. Token is new (Insertion logic)
+        token_index = len(tokens_list) # Assign the new index
         token_data = {
             "token": token,
             "name": name,
@@ -178,6 +192,8 @@ async def set_token(telegram_user_id, token, name, email=None, filters=None, act
             {"$push": {"items": token_data}},
             upsert=True
         )
+
+    return token_index # Return the index
 
 async def toggle_token_status(telegram_user_id, token):
     await _ensure_user_collection_exists(telegram_user_id)
@@ -404,6 +420,52 @@ async def get_batches(telegram_user_id: int) -> list:
     batches_doc = await user_db.find_one({"type": "batches"})
     return batches_doc.get("items", []) if batches_doc else []
 
+async def get_last_batch(user_id: int) -> Tuple[Optional[Dict], int]:
+    """Retrieves the last created batch and the total number of tokens."""
+    user_db = _get_user_collection(user_id)
+    batches_doc = await user_db.find_one({"type": "batches"})
+    tokens_doc = await user_db.find_one({"type": "tokens"})
+    
+    tokens = tokens_doc.get("items", []) if tokens_doc else []
+    total_tokens = len(tokens)
+    
+    if batches_doc and batches_doc.get("items"):
+        last_batch = batches_doc["items"][-1]
+        return last_batch, total_tokens
+    
+    return None, total_tokens
+
+async def add_token_to_auto_batch(user_id: int, token_index: int):
+    """Adds a newly created token (by index) to the correct batch (batches of 10)."""
+    await _ensure_user_collection_exists(user_id)
+    user_db = _get_user_collection(user_id)
+    
+    last_batch_data, total_tokens = await get_last_batch(user_id)
+    
+    # Calculate the current batch number (e.g., index 0-9 is Batch 1, index 10-19 is Batch 2)
+    new_batch_number = (token_index // 10) + 1
+    new_batch_name = f"Batch {new_batch_number}"
+
+    if last_batch_data and last_batch_data.get("name") == new_batch_name:
+        # Case 1: Add to existing, non-full batch (should always be the last one)
+        await user_db.update_one(
+            {"type": "batches", "items.name": new_batch_name},
+            {"$push": {"items.$.token_indices": token_index}}
+        )
+    else:
+        # Case 2: Create a brand new batch for this index (e.g., token 0 or token 10, 20, etc.)
+        batch_data = {
+            "name": new_batch_name,
+            "token_indices": [token_index],
+            "active": True,
+            "filter_nationality": ""
+        }
+        await user_db.update_one(
+            {"type": "batches"},
+            {"$push": {"items": batch_data}},
+            upsert=True
+        )
+
 async def create_batch(telegram_user_id: int, batch_name: str, token_indices: list) -> bool:
     """Create a new batch with specified token indices"""
     await _ensure_user_collection_exists(telegram_user_id)
@@ -488,31 +550,8 @@ async def get_batch_by_name(telegram_user_id: int, batch_name: str):
             return batch
     return None
 
-async def auto_organize_batches(telegram_user_id: int):
-    """Automatically organize tokens into batches of 10"""
-    await _ensure_user_collection_exists(telegram_user_id)
-    user_db = _get_user_collection(telegram_user_id)
+# REMOVED auto_organize_batches as it's replaced by automated logic
 
-    tokens = await get_tokens(telegram_user_id)
-    total_tokens = len(tokens)
-
-    await user_db.delete_one({"type": "batches"})
-
-    batches = []
-    for i in range(0, total_tokens, 10):
-        batch_num = (i // 10) + 1
-        batch_data = {
-            "name": f"Batch {batch_num}",
-            "token_indices": list(range(i, min(i + 10, total_tokens))),
-            "active": True,
-            "filter_nationality": ""
-        }
-        batches.append(batch_data)
-
-    if batches:
-        await user_db.insert_one({"type": "batches", "items": batches})
-
-    return len(batches)
 # --- Pending Signup Accounts Storage ---
 
 async def get_pending_accounts(user_id: int):
