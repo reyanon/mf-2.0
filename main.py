@@ -19,9 +19,8 @@ from db import (
     set_individual_spam_filter, get_individual_spam_filter, get_all_spam_filters,get_spam_menu_data,
     list_all_collections, get_collection_summary, connect_to_collection,
     rename_user_collection, transfer_to_user, get_current_collection_info,
-    # --- START: IMPORT NEW FUNCTIONS ---
-    get_spam_record_count, clear_spam_records
-    # --- END: IMPORT NEW FUNCTIONS ---
+    get_spam_record_count, clear_spam_records,
+    get_batches, create_batch, toggle_batch_status, set_batch_filter, get_batch_by_name, auto_organize_batches
 )
 # Make sure these other local modules are compatible if they also perform I/O
 from lounge import send_lounge, send_lounge_all_tokens
@@ -60,6 +59,7 @@ async def get_settings_menu(user_id: int) -> InlineKeyboardMarkup:
     any_spam_on = any(spam_filters.values())
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Manage Accounts", callback_data="manage_accounts"), InlineKeyboardButton(text="Meeff Filters", callback_data="show_filters")],
+        [InlineKeyboardButton(text="Batch Management", callback_data="batch_management")],
         [InlineKeyboardButton(text=f"Spam Filters: {'ON' if any_spam_on else 'OFF'}", callback_data="spam_filter_menu")],
         [InlineKeyboardButton(text="DB Settings", callback_data="db_settings"), InlineKeyboardButton(text="Back", callback_data="back_to_menu")]
     ])
@@ -104,6 +104,57 @@ def get_account_view_menu(account_idx: int) -> InlineKeyboardMarkup:
 
 def get_confirmation_menu(action_type: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Yes", callback_data=f"confirm_{action_type}"), InlineKeyboardButton(text="Cancel", callback_data="back_to_menu")]])
+
+async def get_batch_management_menu(user_id: int) -> InlineKeyboardMarkup:
+    batches = await get_batches(user_id)
+    tokens = await get_tokens(user_id)
+
+    buttons = []
+
+    if not batches and tokens:
+        buttons.append([InlineKeyboardButton(text="Auto-Organize Batches (10 per batch)", callback_data="auto_organize_batches")])
+
+    for batch in batches:
+        batch_name = batch.get("name", "Unnamed")
+        is_active = batch.get("active", True)
+        status = "ON" if is_active else "OFF"
+        filter_nat = batch.get("filter_nationality", "")
+        nat_display = f" ({filter_nat})" if filter_nat else " (All)"
+
+        buttons.append([
+            InlineKeyboardButton(text=f"{batch_name}{nat_display}", callback_data=f"view_batch_{batch_name}"),
+            InlineKeyboardButton(text=status, callback_data=f"toggle_batch_{batch_name}"),
+            InlineKeyboardButton(text="Filter", callback_data=f"batch_filter_{batch_name}")
+        ])
+
+    if batches:
+        buttons.append([InlineKeyboardButton(text="Reorganize Batches", callback_data="auto_organize_batches")])
+
+    buttons.append([InlineKeyboardButton(text="Back", callback_data="settings_menu")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_batch_filter_menu(batch_name: str) -> InlineKeyboardMarkup:
+    countries = [
+        ("RU", "Russia"), ("UA", "Ukraine"), ("BY", "Belarus"), ("IR", "Iran"), ("PH", "Philippines"),
+        ("PK", "Pakistan"), ("US", "USA"), ("IN", "India"), ("DE", "Germany"), ("FR", "France"),
+        ("BR", "Brazil"), ("CN", "China"), ("JP", "Japan"), ("KR", "Korea"), ("CA", "Canada"),
+        ("AU", "Australia"), ("IT", "Italy"), ("ES", "Spain"), ("ZA", "South Africa"), ("TR", "Turkey")
+    ]
+
+    buttons = []
+    buttons.append([InlineKeyboardButton(text="All Countries", callback_data=f"batch_nat_all_{batch_name}")])
+
+    row = []
+    for i, (code, name) in enumerate(countries):
+        row.append(InlineKeyboardButton(text=code, callback_data=f"batch_nat_{code}_{batch_name}"))
+        if len(row) == 4 or i == len(countries) - 1:
+            buttons.append(row)
+            row = []
+
+    buttons.append([InlineKeyboardButton(text="Back", callback_data="batch_management")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 start_markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Current Request", callback_data="send_request_menu"), InlineKeyboardButton(text="Request All", callback_data="start_all")]])
 send_request_markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Start Request", callback_data="start"), InlineKeyboardButton(text="All Countries", callback_data="all_countries")], [InlineKeyboardButton(text="Back", callback_data="back_to_menu")]])
@@ -229,29 +280,178 @@ async def send_chat_all(message: Message):
 @router.message(Command("invoke"))
 async def invoke_command(message: Message):
     user_id = message.chat.id
-    if not has_valid_access(user_id): return await message.reply("You are not authorized.")
-    tokens = await get_tokens(user_id)
-    if not tokens: return await message.reply("No tokens found.")
+    if not has_valid_access(user_id):
+        return await message.reply("You are not authorized.")
 
-    status_msg = await message.reply("<b>Checking Account Status...</b>", parse_mode="HTML")
-    disabled_accounts, working_accounts = [], []
+    parts = message.text.strip().split(maxsplit=1)
+
+    # ---------------------------------------------------------
+    # CASE 1: User wrote `/invoke all`
+    # ---------------------------------------------------------
+    if len(parts) == 2 and parts[1].lower() == "all":
+        tokens = await get_tokens(user_id)
+        if not tokens:
+            return await message.reply("No accounts found.")
+
+        status_msg = await message.reply("<b>Checking ALL Account Status...</b>", parse_mode="HTML")
+        disabled = []
+        working = []
+
+        async with aiohttp.ClientSession() as session:
+            for t in tokens:
+                headers = {
+                    "User-Agent": "okhttp/5.0.0-alpha.14",
+                    "meeff-access-token": t["token"]
+                }
+                try:
+                    async with session.get(
+                        "https://api.meeff.com/facetalk/vibemeet/history/count/v1",
+                        params={"locale": "en"},
+                        headers=headers
+                    ) as resp:
+                        data = await resp.json(content_type=None)
+                        if data.get("errorCode") == "AuthRequired":
+                            disabled.append(t)
+                        else:
+                            working.append(t)
+                except:
+                    disabled.append(t)
+
+        # Remove disabled accounts
+        if disabled:
+            for acc in disabled:
+                await delete_token(user_id, acc["token"])
+
+            removed_names = "\n".join([f"• {html.escape(a['name'])}" for a in disabled])
+            return await status_msg.edit_text(
+                f"<b>Invoke ALL Complete</b>\n"
+                f"Working: {len(working)}\n"
+                f"Removed: {len(disabled)}\n\n"
+                f"<b>Removed Accounts:</b>\n{removed_names}",
+                parse_mode="HTML"
+            )
+
+        return await status_msg.edit_text(
+            f"<b>All Accounts Working ({len(working)})</b>",
+            parse_mode="HTML"
+        )
+
+    # ---------------------------------------------------------
+    # CASE 2: User wrote `/invoke <batch_name>`
+    # ---------------------------------------------------------
+    if len(parts) == 2:
+        batch_name = parts[1].strip()
+        batch = await get_batch_by_name(user_id, batch_name)
+        if batch:
+            tokens = await get_tokens(user_id)
+            batch_tokens = [
+                tokens[idx] for idx in batch.get("token_indices", [])
+                if idx < len(tokens)
+            ]
+
+            if not batch_tokens:
+                return await message.reply(f"No tokens found in batch '{batch_name}'.")
+
+            status_msg = await message.reply(
+                f"<b>Checking Batch '{batch_name}'...</b>",
+                parse_mode="HTML"
+            )
+
+            disabled = []
+            working = []
+
+            async with aiohttp.ClientSession() as session:
+                for t in batch_tokens:
+                    headers = {
+                        "User-Agent": "okhttp/5.0.0-alpha.14",
+                        "meeff-access-token": t["token"]
+                    }
+                    try:
+                        async with session.get(
+                            "https://api.meeff.com/facetalk/vibemeet/history/count/v1",
+                            params={"locale": "en"},
+                            headers=headers
+                        ) as resp:
+                            data = await resp.json(content_type=None)
+                            if data.get("errorCode") == "AuthRequired":
+                                disabled.append(t)
+                            else:
+                                working.append(t)
+                    except:
+                        disabled.append(t)
+
+            # Remove disabled accounts
+            if disabled:
+                for acc in disabled:
+                    await delete_token(user_id, acc["token"])
+
+                removed_names = "\n".join([f"• {html.escape(a['name'])}" for a in disabled])
+                return await status_msg.edit_text(
+                    f"<b>Batch '{batch_name}' Cleanup Complete</b>\n"
+                    f"Working: {len(working)}\n"
+                    f"Removed: {len(disabled)}\n\n"
+                    f"<b>Removed Accounts:</b>\n{removed_names}",
+                    parse_mode="HTML"
+                )
+
+            return await status_msg.edit_text(
+                f"<b>All Accounts in Batch '{batch_name}' Working ({len(working)})</b>",
+                parse_mode="HTML"
+            )
+
+        # If name doesn’t match any batch → continue to normal invoke
+        # (maybe user wrote `/invoke something wrong`)
+
+    # ---------------------------------------------------------
+    # CASE 3: Default `/invoke` → check ACTIVE accounts only
+    # ---------------------------------------------------------
+    active_tokens = await get_active_tokens(user_id)
+    if not active_tokens:
+        return await message.reply("No active accounts found.")
+
+    status_msg = await message.reply("<b>Checking Active Accounts...</b>", parse_mode="HTML")
+
+    disabled = []
+    working = []
+
     async with aiohttp.ClientSession() as session:
-        for token_obj in tokens:
-            headers = {'User-Agent': "okhttp/5.0.0-alpha.14", 'meeff-access-token': token_obj["token"]}
+        for t in active_tokens:
+            headers = {
+                "User-Agent": "okhttp/5.0.0-alpha.14",
+                "meeff-access-token": t["token"]
+            }
             try:
-                async with session.get("https://api.meeff.com/facetalk/vibemeet/history/count/v1", params={'locale': "en"}, headers=headers) as resp:
-                    if (await resp.json(content_type=None)).get("errorCode") == "AuthRequired": disabled_accounts.append(token_obj)
-                    else: working_accounts.append(token_obj)
-            except Exception as e:
-                logger.error(f"Error checking token {token_obj.get('name')}: {e}")
-                disabled_accounts.append(token_obj)
+                async with session.get(
+                    "https://api.meeff.com/facetalk/vibemeet/history/count/v1",
+                    params={"locale": "en"},
+                    headers=headers
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    if data.get("errorCode") == "AuthRequired":
+                        disabled.append(t)
+                    else:
+                        working.append(t)
+            except:
+                disabled.append(t)
 
-    if disabled_accounts:
-        for token_obj in disabled_accounts: await delete_token(user_id, token_obj["token"])
-        removed_names = "\n".join([f"• {html.escape(acc['name'])}" for acc in disabled_accounts])
-        await status_msg.edit_text(f"<b>Cleanup Complete</b>\nWorking: {len(working_accounts)}\nRemoved: {len(disabled_accounts)}\n\n<b>Removed accounts:</b>\n{removed_names}", parse_mode="HTML")
-    else:
-        await status_msg.edit_text(f"<b>All Accounts Working ({len(working_accounts)} total).</b>", parse_mode="HTML")
+    if disabled:
+        for acc in disabled:
+            await delete_token(user_id, acc["token"])
+
+        removed_names = "\n".join([f"• {html.escape(a['name'])}" for a in disabled])
+        return await status_msg.edit_text(
+            f"<b>Cleanup Complete</b>\n"
+            f"Working: {len(working)}\n"
+            f"Removed: {len(disabled)}\n\n"
+            f"<b>Removed Accounts:</b>\n{removed_names}",
+            parse_mode="HTML"
+        )
+
+    return await status_msg.edit_text(
+        f"<b>All Active Accounts Working ({len(working)})</b>",
+        parse_mode="HTML"
+    )
+
 
 @router.message(Command("settings"))
 async def settings_command(message: Message):
@@ -362,6 +562,62 @@ async def show_manage_accounts_menu(callback_query: CallbackQuery):
         if "message is not modified" not in e.message: logger.error(f"Error editing message: {e}")
         await callback_query.answer()
 
+# ----------------- NEW: Show accounts inside a batch using Manage Accounts layout -----------------
+async def show_batch_accounts_menu(callback_query: CallbackQuery, batch_name: str):
+    user_id = callback_query.from_user.id
+    batch = await get_batch_by_name(user_id, batch_name)
+    if not batch:
+        return await callback_query.answer("Batch not found.", show_alert=True)
+
+    tokens = await get_tokens(user_id)
+    token_indices = batch.get("token_indices", [])
+
+    # Build list of token objects using the real indices
+    batch_tokens = []
+    real_indices = []
+    for idx in token_indices:
+        if idx < len(tokens):
+            batch_tokens.append(tokens[idx])
+            real_indices.append(idx)
+
+    if not batch_tokens:
+        return await callback_query.message.edit_text(
+            f"<b>{html.escape(batch_name)}</b>\nNo accounts found in this batch.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data="batch_management")]]),
+            parse_mode="HTML"
+        )
+
+    current_token = await get_current_account(user_id)
+    all_filters = await get_all_user_filters(user_id)
+
+    buttons = []
+    for i, tok in enumerate(batch_tokens):
+        global_index = real_indices[i]
+        is_current = "🔹" if tok['token'] == current_token else "▫️"
+
+        token_filters = all_filters.get(tok['token'], {})
+        nationality_code = token_filters.get("filterNationalityCode", "")
+
+        account_name = html.escape(tok['name'][:20])
+        display_name = f"{account_name} ({nationality_code})" if nationality_code else account_name
+
+        # Use '|' delimiter to avoid ambiguity with underscores inside batch names
+        buttons.append([
+            InlineKeyboardButton(text=f"{is_current} {display_name}", callback_data=f"batch_select|{batch_name}|{global_index}"),
+            InlineKeyboardButton(text="ON" if tok.get('active', True) else "OFF", callback_data=f"batch_toggle|{batch_name}|{global_index}"),
+            InlineKeyboardButton(text="View", callback_data=f"batch_view|{batch_name}|{global_index}")
+        ])
+
+    buttons.append([InlineKeyboardButton(text="Back", callback_data="batch_management")])
+
+    try:
+        await callback_query.message.edit_text(f"<b>{html.escape(batch_name)} - Manage Accounts</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons), parse_mode="HTML")
+    except TelegramBadRequest as e:
+        if "message is not modified" not in e.message: logger.error(f"Error editing message: {e}")
+        await callback_query.answer()
+
+# -----------------------------------------------------------------------------------------------
+
 @router.callback_query()
 async def callback_handler(callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
@@ -440,7 +696,100 @@ async def callback_handler(callback_query: CallbackQuery):
             new_status = not await get_individual_spam_filter(user_id, filter_type)
             await set_individual_spam_filter(user_id, filter_type, new_status)
         await callback_handler(callback_query.model_copy(update={'data': 'spam_filter_menu'}))
-    
+
+    elif data == "batch_management":
+        await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+
+    elif data == "auto_organize_batches":
+        tokens = await get_tokens(user_id)
+        if not tokens: return await callback_query.answer("No accounts found to organize.", show_alert=True)
+        num_batches = await auto_organize_batches(user_id)
+        await callback_query.answer(f"Created {num_batches} batches!")
+        await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+
+    # New behavior: open the Batch Manage-Accounts style UI
+    elif data.startswith("view_batch_"):
+        batch_name = data.replace("view_batch_", "")
+        await show_batch_accounts_menu(callback_query, batch_name)
+
+    elif data.startswith("batch_select|"):
+        # Format: batch_select|{batch_name}|{global_index}
+        try:
+            _, batch_name, idx_str = data.split("|", 2)
+            idx = int(idx_str)
+        except Exception:
+            return await callback_query.answer("Invalid data.", show_alert=True)
+
+        tokens = await get_tokens(user_id)
+        if 0 <= idx < len(tokens):
+            await set_current_account(user_id, tokens[idx]["token"])
+            await show_batch_accounts_menu(callback_query, batch_name)
+
+    elif data.startswith("batch_toggle|"):
+        # Format: batch_toggle|{batch_name}|{global_index}
+        try:
+            _, batch_name, idx_str = data.split("|", 2)
+            idx = int(idx_str)
+        except Exception:
+            return await callback_query.answer("Invalid data.", show_alert=True)
+
+        tokens = await get_tokens(user_id)
+        if 0 <= idx < len(tokens):
+            await toggle_token_status(user_id, tokens[idx]["token"])
+            await show_batch_accounts_menu(callback_query, batch_name)
+
+    elif data.startswith("batch_view|"):
+        # Format: batch_view|{batch_name}|{global_index}
+        try:
+            _, batch_name, idx_str = data.split("|", 2)
+            idx = int(idx_str)
+        except Exception:
+            return await callback_query.answer("Invalid data.", show_alert=True)
+
+        tokens = await get_tokens(user_id)
+        if 0 <= idx < len(tokens):
+            token_obj = tokens[idx]
+            info = await get_info_card(user_id, token_obj["token"])
+            text = (
+                f"<b>Name:</b> {html.escape(token_obj.get('name','N/A'))}\n"
+                f"<b>Status:</b> {'Active' if token_obj.get('active', True) else 'Inactive'}\n\n"
+                f"{info or 'No profile card found.'}"
+            )
+            await callback_query.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Back", callback_data=f"view_batch_{batch_name}")]])
+            )
+
+    elif data.startswith("toggle_batch_"):
+        batch_name = data.replace("toggle_batch_", "")
+        success = await toggle_batch_status(user_id, batch_name)
+        if success:
+            await callback_query.answer(f"Toggled batch {batch_name} status!")
+            await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+        else:
+            await callback_query.answer("Failed to toggle batch status.", show_alert=True)
+
+    elif data.startswith("batch_filter_"):
+        batch_name = data.replace("batch_filter_", "")
+        await callback_query.message.edit_text(f"<b>Set Filter for {batch_name}</b>\n\nSelect nationality filter:", reply_markup=get_batch_filter_menu(batch_name), parse_mode="HTML")
+
+    elif data.startswith("batch_nat_"):
+        parts = data.split("_")
+        if len(parts) >= 3:
+            nat_code = parts[2]
+            batch_name = "_".join(parts[3:])
+
+            if nat_code == "all":
+                nat_code = ""
+
+            success = await set_batch_filter(user_id, batch_name, nat_code)
+            if success:
+                await callback_query.answer(f"Filter updated for {batch_name}!")
+                await callback_query.message.edit_text("<b>Batch Management</b>\n\nOrganize accounts into batches of 10 for easier management.", reply_markup=await get_batch_management_menu(user_id), parse_mode="HTML")
+            else:
+                await callback_query.answer("Failed to update filter.", show_alert=True)
+
     # --- START: NEW SPAM CLEAR LOGIC ---
     elif data == "noop_count":
         await callback_query.answer("This is the count of spam-filtered IDs.")
