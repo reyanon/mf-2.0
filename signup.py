@@ -511,13 +511,13 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             parse_mode="HTML"
         )
 
+    # --- START BATCHED VERIFICATION LOGIC ---
     elif data == "verify_accounts" or data == "retry_pending":
         pending = state.get("pending_accounts", [])
         if not pending:
             await callback.message.edit_text(
                 "<b>No Pending Accounts</b>\n\nAll accounts are either verified or none were created.",
-                reply_markup=SIGNUP_MENU,
-                parse_mode="HTML"
+                reply_markup=SIGNUP_MENU, parse_mode="HTML"
             )
             return True
             
@@ -555,7 +555,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         total_batches = (total_accounts // BATCH_SIZE) + (1 if total_accounts % BATCH_SIZE else 0)
         
         accounts_remaining_for_next = accounts_to_verify.copy()
-        current_processed_count = 0
         
         for batch_num in range(1, total_batches + 1):
             if not accounts_remaining_for_next:
@@ -579,7 +578,6 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             
             # Process results
             for idx, (res, acc) in enumerate(results):
-                current_processed_count += 1
                 
                 if res is not None:
                     # SUCCESS
@@ -650,6 +648,8 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
+    # --- END BATCHED VERIFICATION LOGIC ---
+    
     elif data == "signup_menu":
         state["stage"] = "menu"
         await callback.message.edit_text(
