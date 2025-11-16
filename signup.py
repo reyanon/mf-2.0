@@ -521,50 +521,116 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
             )
             return True
             
-        await callback.message.edit_text("<b>Verifying Accounts Concurrently...</b>", parse_mode="HTML")
+        msg_to_edit = await callback.message.edit_text("<b>Starting Verification in Batches...</b>", parse_mode="HTML")
         
+        # BATCHING CONFIG
+        BATCH_SIZE = 5
+        BATCH_DELAY_SECONDS = 60 # 1 minute delay between batches
+        MAX_CONCURRENT_VERIFY = 4
+        
+        # Prepare for batched sign-in
+        accounts_to_verify = pending.copy()
         verified = state.get("verified_accounts", [])
         filter_nat = state.get("filter_nationality", "")
         
-        # Prepare concurrent sign-in tasks
-        signin_tasks = []
-        for acc in pending:
-            # The try_signin function contains throttling logic
-            task = try_signin(acc["email"], acc["password"], user_id) 
-            signin_tasks.append(task)
-            
-        # Execute all sign-in tasks concurrently
-        results = await asyncio.gather(*signin_tasks)
-        
         new_pending = []
+        verified_in_run = []
         
-        # Process results
-        for i, res in enumerate(results):
-            acc = pending[i]
+        sem = asyncio.Semaphore(MAX_CONCURRENT_VERIFY)
+
+        async def worker_verify(acc):
+            await sem.acquire()
+            try:
+                # try_signin already has a small random delay (0.5s to 1.5s) built-in
+                res = await try_signin(acc["email"], acc["password"], user_id)
+            finally:
+                sem.release()
+            
             if res.get("accessToken") and res.get("user"):
-                token = res["accessToken"]
+                return res, acc # Success
+            return None, acc # Failure
+
+        # --- BATCHING LOOP ---
+        total_accounts = len(accounts_to_verify)
+        total_batches = (total_accounts // BATCH_SIZE) + (1 if total_accounts % BATCH_SIZE else 0)
+        
+        accounts_remaining_for_next = accounts_to_verify.copy()
+        current_processed_count = 0
+        
+        for batch_num in range(1, total_batches + 1):
+            if not accounts_remaining_for_next:
+                break
                 
-                # DB operations remain sequential to ensure atomic updates per account
-                await set_token(user_id, token, acc["name"], acc["email"])
-                await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
+            current_batch = accounts_remaining_for_next[:BATCH_SIZE]
+            accounts_remaining_for_next = accounts_remaining_for_next[BATCH_SIZE:]
+            
+            # --- Live Update 1: Starting the Batch ---
+            await msg_to_edit.edit_text(
+                f"<b>Batch {batch_num} of {total_batches} in Progress...</b> ⏳\n"
+                f"Total Verified: {len(verified)} | Pending: {total_accounts - len(verified) - len(new_pending)}",
+                parse_mode="HTML"
+            )
+            
+            # Execute current batch concurrently
+            tasks = [worker_verify(acc) for acc in current_batch]
+            results = await asyncio.gather(*tasks)
+            
+            failed_in_batch = []
+            
+            # Process results
+            for idx, (res, acc) in enumerate(results):
+                current_processed_count += 1
                 
-                res["user"].update({
-                    "email": acc["email"],
-                    "password": acc["password"],
-                    "token": token
-                })
-                await set_info_card(user_id, token, format_user_with_nationality(res["user"]), acc["email"])
-                verified.append(acc)
-            else:
-                new_pending.append(acc)
+                if res is not None:
+                    # SUCCESS
+                    token = res["accessToken"]
+                    
+                    # DB operations
+                    await set_token(user_id, token, acc["name"], acc["email"])
+                    await set_user_filters(user_id, token, {"filterNationalityCode": filter_nat})
+                    
+                    res["user"].update({
+                        "email": acc["email"],
+                        "password": acc["password"],
+                        "token": token
+                    })
+                    await set_info_card(user_id, token, format_user_with_nationality(res["user"]), acc["email"])
+                    verified.append(acc)
+                    verified_in_run.append(acc)
+                    
+                    # --- Live Progress Update: After EACH successful account ---
+                    await msg_to_edit.edit_text(
+                        f"<b>Batch {batch_num} in Progress...</b> (Account {idx + 1} of {len(current_batch)} complete)\n"
+                        f"✅ Total Verified: {len(verified)} | ❌ Failed: {len(new_pending)}",
+                        parse_mode="HTML"
+                    )
+                else:
+                    # FAILURE (Keep in pending list)
+                    failed_in_batch.append(acc)
+                    
+            # Add failures back to the list of pending accounts for this flow (for final display)
+            new_pending.extend(failed_in_batch)
+            
+            # --- Delay ---
+            if batch_num < total_batches and accounts_remaining_for_next:
+                # --- Live Update 2: Delay Notification ---
+                await msg_to_edit.edit_text(
+                    f"<b>Batch {batch_num} Complete.</b>\n"
+                    f"Verified total: {len(verified)}.\n"
+                    f"Pausing for **{BATCH_DELAY_SECONDS} seconds** before Batch {batch_num + 1}... 😴",
+                    parse_mode="HTML"
+                )
+                await asyncio.sleep(BATCH_DELAY_SECONDS)
                 
+        # --- END BATCHING LOOP ---
+        
         state["verified_accounts"] = verified
-        state["pending_accounts"] = new_pending
+        state["pending_accounts"] = new_pending # Only contains accounts that failed sign-in across all batches
         
         # Final results message
         if not new_pending:
             result_text = (
-                f"<b>Verification Results</b>\n\n"
+                f"<b>Verification Complete!</b>\n\n"
                 f"<b>All Accounts Verified:</b> {len(verified)} account{'s' if len(verified) != 1 else ''}\n\n"
                 "All accounts have been successfully verified and saved."
             )
@@ -572,19 +638,18 @@ async def signup_callback_handler(callback: CallbackQuery) -> bool:
         else:
             result_text = (
                 f"<b>Verification Results</b>\n\n"
-                f"<b>Verified:</b> {len(verified)} account{'s' if len(verified) != 1 else ''}\n"
-                f"<b>Pending Verification:</b> {len(new_pending)} account{'s' if len(new_pending) != 1 else ''}\n\n"
+                f"<b>Verified in this run:</b> {len(verified_in_run)}\n"
+                f"<b>Still Pending:</b> {len(new_pending)} account{'s' if len(new_pending) != 1 else ''}\n\n"
                 "<b>Pending Accounts:</b>\n" + '\n'.join([f"• <code>{a['email']}</code>" for a in new_pending]) +
-                "\n\nPlease verify these emails, then retry."
+                "\n\nPlease ensure these emails are verified, then retry."
             )
             reply_markup = RETRY_VERIFY_BUTTON
             
-        await callback.message.edit_text(
+        await msg_to_edit.edit_text(
             result_text,
             reply_markup=reply_markup,
             parse_mode="HTML"
         )
-
     elif data == "signup_menu":
         state["stage"] = "menu"
         await callback.message.edit_text(
