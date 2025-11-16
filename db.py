@@ -1,3 +1,4 @@
+
 from pymongo import MongoClient
 import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -512,3 +513,33 @@ async def auto_organize_batches(telegram_user_id: int):
         await user_db.insert_one({"type": "batches", "items": batches})
 
     return len(batches)
+# --- Pending Signup Accounts Storage ---
+
+async def get_pending_accounts(user_id: int):
+    user_db = _get_user_collection(user_id)
+    doc = await user_db.find_one({"type": "pending_signup"})
+    return doc.get("accounts", []) if doc else []
+
+async def add_pending_accounts(user_id: int, accounts: list):
+    user_db = _get_user_collection(user_id)
+    await user_db.update_one(
+        {"type": "pending_signup"},
+        {"$push": {"accounts": {"$each": accounts}}},
+        upsert=True
+    )
+
+async def clear_pending_accounts(user_id: int):
+    user_db = _get_user_collection(user_id)
+    await user_db.update_one(
+        {"type": "pending_signup"},
+        {"$set": {"accounts": []}},
+        upsert=True
+    )
+
+async def remove_pending_account(user_id: int, email: str):
+    user_db = _get_user_collection(user_id)
+    await user_db.update_one(
+        {"type": "pending_signup"},
+        {"$pull": {"accounts": {"email": email}}},
+        upsert=True
+    )
