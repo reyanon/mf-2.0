@@ -147,37 +147,56 @@ async def get_info_card(telegram_user_id, token):
         return cards_doc["data"][token].get("info")
     return None
 
-# MODIFIED: set_token now returns the token's index
+# MODIFIED: set_token now returns the token's index and handles email-based duplicates
 async def set_token(telegram_user_id, token, name, email=None, filters=None, active=True) -> int:
     await _ensure_user_collection_exists(telegram_user_id)
     user_db = _get_user_collection(telegram_user_id)
-    
+
     tokens_doc = await user_db.find_one({"type": "tokens"})
     tokens_list = tokens_doc.get("items", []) if tokens_doc else []
 
     token_index = -1
-    
-    # 1. Check if token already exists to find its index
+    email_index = -1
+
+    # 1. Check if email already exists (to prevent duplicates) and if token exists
     for i, t in enumerate(tokens_list):
+        if email and t.get("email") == email:
+            email_index = i
         if t["token"] == token:
             token_index = i
-            break
+
+    # 2. If email exists, remove the old entry first (replace logic)
+    if email and email_index != -1 and token_index != email_index:
+        # Remove old token with same email
+        await user_db.update_one(
+            {"type": "tokens"},
+            {"$pull": {"items": {"email": email}}}
+        )
+        # Refresh the list
+        tokens_doc = await user_db.find_one({"type": "tokens"})
+        tokens_list = tokens_doc.get("items", []) if tokens_doc else []
+        # Recalculate token_index
+        token_index = -1
+        for i, t in enumerate(tokens_list):
+            if t["token"] == token:
+                token_index = i
+                break
 
     if token_index != -1:
-        # 2. Token exists (Update logic remains the same)
+        # 3. Token exists (Update logic)
         update_fields = {
             "items.$.name": name,
             "items.$.active": active
         }
         if email: update_fields["items.$.email"] = email
         if filters: update_fields["items.$.filters"] = filters
-        
+
         await user_db.update_one(
             {"type": "tokens", "items.token": token},
             {"$set": update_fields}
         )
     else:
-        # 3. Token is new (Insertion logic)
+        # 4. Token is new (Insertion logic)
         token_index = len(tokens_list) # Assign the new index
         token_data = {
             "token": token,
@@ -186,7 +205,7 @@ async def set_token(telegram_user_id, token, name, email=None, filters=None, act
         }
         if email: token_data["email"] = email
         if filters: token_data["filters"] = filters
-        
+
         await user_db.update_one(
             {"type": "tokens"},
             {"$push": {"items": token_data}},
