@@ -21,7 +21,7 @@ from db import (
     rename_user_collection, transfer_to_user, get_current_collection_info,
     get_spam_record_count, clear_spam_records,
     get_batches, create_batch, toggle_batch_status, set_batch_filter, get_batch_by_name, # auto_organize_batches removed
-    add_token_to_auto_batch 
+    add_token_to_auto_batch, cleanup_duplicate_emails
 )
 # Make sure these other local modules are compatible if they also perform I/O
 from lounge import send_lounge, send_lounge_all_tokens
@@ -205,6 +205,13 @@ async def signin_cmd(message: Message):
     # Redirect signin command to the unified email input stage
     user_signup_states[message.from_user.id] = {"stage": "multi_signin_emails"}
     await message.reply("<b>Sign In (Single or Multi)</b>\n\nEnter one or more emails:", reply_markup=BACK_TO_SIGNUP, parse_mode="HTML")
+
+@router.message(Command("cleanup"))
+async def cleanup_command(message: Message):
+    if not has_valid_access(message.chat.id): return await message.reply("You are not authorized.")
+    user_id = message.chat.id
+    result = await cleanup_duplicate_emails(user_id)
+    await message.reply(f"<b>Cleanup Complete</b>\n\n✅ {result['status']}\n🗑️ Removed {result['removed']} duplicate tokens", parse_mode="HTML")
 
 @router.message(Command("skip"))
 async def skip_command(message: Message):

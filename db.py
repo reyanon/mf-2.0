@@ -272,6 +272,48 @@ async def delete_token(telegram_user_id, token):
         await set_current_account(telegram_user_id, None)
     await user_db.update_one({"type": "info_cards"}, {"$unset": {f"data.{token}": ""}})
 
+async def cleanup_duplicate_emails(telegram_user_id):
+    """Remove duplicate email entries, keeping only the latest token for each email"""
+    await _ensure_user_collection_exists(telegram_user_id)
+    user_db = _get_user_collection(telegram_user_id)
+
+    tokens_doc = await user_db.find_one({"type": "tokens"})
+    if not tokens_doc:
+        return {"status": "No tokens found", "removed": 0}
+
+    tokens_list = tokens_doc.get("items", [])
+    if not tokens_list:
+        return {"status": "No tokens to clean", "removed": 0}
+
+    email_map = {}
+    to_remove = []
+
+    # Map each email to its tokens, keep track of all but the last one
+    for i, token_obj in enumerate(tokens_list):
+        email = token_obj.get("email")
+        if email:
+            if email not in email_map:
+                email_map[email] = []
+            email_map[email].append(i)
+
+    # Mark older tokens for deletion (keep only the latest)
+    for email, indices in email_map.items():
+        if len(indices) > 1:
+            # Keep the last one (highest index), mark others for removal
+            for idx in indices[:-1]:
+                to_remove.append(tokens_list[idx]["token"])
+
+    # Remove duplicates
+    removed_count = 0
+    for token_to_remove in to_remove:
+        await user_db.update_one(
+            {"type": "tokens"},
+            {"$pull": {"items": {"token": token_to_remove}}}
+        )
+        removed_count += 1
+
+    return {"status": "Cleanup complete", "removed": removed_count}
+
 async def set_user_filters(telegram_user_id, token, filters):
     await _ensure_user_collection_exists(telegram_user_id)
     await _get_user_collection(telegram_user_id).update_one({"type": "tokens", "items.token": token}, {"$set": {"items.$.filters": filters}})
